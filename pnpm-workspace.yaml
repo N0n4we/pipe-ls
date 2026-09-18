@@ -1,0 +1,6 @@
+packages:
+  - packages/*
+
+# 不自动执行依赖安装脚本；需要时逐项审核。
+allowBuilds:
+  esbuild: false

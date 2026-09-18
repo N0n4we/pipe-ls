@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@pipe-ls/core": ["./packages/core/src/index.ts"],
+      "@pipe-ls/hosts": ["./packages/hosts/src/index.ts"],
+      "@pipe-ls/workspace": ["./packages/workspace/src/index.ts"],
+      "@pipe-ls/cli": ["./packages/cli/src/index.ts"],
+      "@pipe-ls/lsp": ["./packages/lsp/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/test/**/*.ts",
+    "vitest.config.ts"
+  ]
+}

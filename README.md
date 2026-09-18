@@ -4,7 +4,32 @@
 
 目标不是检查任意 Bash，而是让运维在约定脚本风格下获得字段补全、类型提示、跳转、引用、重命名和即时诊断，减少纯文本开发中的猜测与手工核对。CLI 复用同一分析核心，在 CI 中执行相同检查。
 
-当前只有设计文档，尚未实现 CLI 或 LSP；下文均为待实现约定。
+当前已初始化工程结构、开发工具链及 UTF-16 Span 基础模型，尚未实现分析器、CLI 或 LSP；下文产品能力均为待实现约定。
+
+## 本地开发
+
+使用 Node.js 22.13+（推荐 `.node-version` 锁定版本）与 pnpm 11.20.0。
+
+```sh
+pnpm install --frozen-lockfile
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+`pnpm test:watch` 启动测试监听，`pnpm format` 格式化代码与配置。构建产物位于各包的 `dist/`，不纳入版本控制；删除产物后可直接重新构建，类型检查和单元测试不依赖预先构建。
+
+```text
+packages/
+  core/       纯内存分析核心；目前仅有 Span 模型与单元测试
+  hosts/      脚本/CI 提取与位置映射（待实现）
+  workspace/  项目探查、只读快照与依赖管理（待实现）
+  cli/        命令行适配器（待实现）
+  lsp/        语言服务适配器（待实现）
+```
+
+依赖方向为 `hosts → core`、`workspace → core/hosts`、`cli/lsp → workspace`。所有包暂为 private，不提供可执行命令或发布包。尚未引入 parser/WASM 资产；其版本、校验值、许可证与离线加载验证将在解析器接入时补齐。集成测试、安装包测试及 VS Code 客户端也尚未实现。
 
 ## 核心约定
 

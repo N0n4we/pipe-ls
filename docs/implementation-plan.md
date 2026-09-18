@@ -1,6 +1,6 @@
 # 实施与验证计划
 
-当前只有设计文档，没有已实现的包、命令或产品测试。按纵向可用功能交付，不以空目录/接口数量代替完成，不在原型验证前承诺工期。
+当前已建立 pnpm workspace、TypeScript strict、Vitest、lint 与构建入口，并提供 UTF-16 Span 基础模型及单元测试；尚无分析器、可执行命令或产品测试，P0 尚未完成。按纵向可用功能交付，不以空目录/接口数量代替完成，不在原型验证前承诺工期。
 
 ## 1. 交付顺序
 
@@ -82,10 +82,10 @@
 
 ## 4. 完成标准
 
-待实现验证入口：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`pnpm test:integration`、`pnpm test:package`。
+已有工程验证入口：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`。其中测试目前只覆盖基础模型，不代表产品能力通过验收。待实现：`pnpm test:integration`、`pnpm test:package`。
 
 安装包在独立临时目录离线加载 WASM、执行 check、启动/关闭 LSP，携带版本与许可清单，不依赖开发仓库绝对路径。初始性能目标为 100KB 文档暖分析 p95 < 200ms、100 个典型 unit 冷 CLI < 5s；记录机器/版本/fixture hash 和峰值内存，未实测前不作为宣传结论。
 
 MVP 完成须同时满足：支持范围内正例/反例/受阻例稳定；编辑闭环可用；CLI 与 LSP 共用规则；不完整检查不返回通过；不执行用户代码、不访问远程资源、不泄露敏感数据；README 只描述真实已实现能力。
 
-设计阶段只验证文档链接、示例语法及本机可运行的受控样例，不宣称产品测试已通过。
+工程初始化阶段只验证工具链、基础模型及构建，不宣称产品测试已通过。
