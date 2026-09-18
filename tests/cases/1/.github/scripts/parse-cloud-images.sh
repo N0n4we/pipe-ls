@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
+# @pipe stdin: string
+# @pipe stdout: {"target_family": string, "platforms": [string], "images": [{"platform": string, "registry": string, "repository": string, "image_name": string, "deployment_names": [string], "tag": string} | {"platform": string, "registry": string, "repository": string, "image_name": string, "deployment_names": [string], "digest": string}]}
 
 # Validate allowlisted image references and emit JSON without side effects.
 set -euo pipefail
 export LC_ALL=C
 
-if [[ $# -ne 1 || -z ${1:-} ]]; then
-  printf 'ERROR: expected exactly one non-empty images argument.\n' >&2
+input="$(jq -er '.')"
+if [[ -z "$input" ]]; then
+  printf 'ERROR: expected non-empty images JSON string on stdin.\n' >&2
   exit 1
 fi
 
-input="$1"
 if [[ "$input" == ,* || "$input" == *, || "$input" == *,,* ]]; then
   printf 'ERROR: empty image reference.\n' >&2
   exit 1

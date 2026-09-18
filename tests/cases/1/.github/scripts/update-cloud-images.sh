@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# @pipe stdin: {"environment": string, "parsed_images": {"target_family": string, "platforms": [string], "images": [{"platform": string, "registry": string, "repository": string, "image_name": string, "deployment_names": [string], "tag": string} | {"platform": string, "registry": string, "repository": string, "image_name": string, "deployment_names": [string], "digest": string}]}}
+# @pipe stdout: {"target_family": string, "kustomization_file_path": string, "platforms": [string], "restart_targets": {} | {"aws": {"deployments": [string], "namespace": string}} | {"huaweicloud": {"deployments": [string], "namespace": string}} | {"aws": {"deployments": [string], "namespace": string}, "huaweicloud": {"deployments": [string], "namespace": string}}}
 
 # Update overlays from an environment and parsed-images JSON; emit update metadata.
 set -euo pipefail
@@ -9,12 +11,10 @@ fail() {
   exit 1
 }
 
-if [[ $# -ne 2 || -z ${1:-} || -z ${2:-} ]]; then
-  fail 'expected exactly two arguments: environment and parsed images JSON text.'
-fi
-
-environment="$1"
-parsed_images_json="$2"
+# Consume stdin once; extract both parameters from the captured JSON document.
+input_json="$(jq -c '.')"
+environment="$(jq -er '.environment' <<< "$input_json")"
+parsed_images_json="$(jq -c '.parsed_images' <<< "$input_json")"
 case "$environment" in
   dev|pre-dev|test|staging|prod) ;;
   *) fail 'unsupported environment.' ;;

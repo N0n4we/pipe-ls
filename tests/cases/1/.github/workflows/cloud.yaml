@@ -47,39 +47,50 @@ jobs:
     steps:
       - name: Echo distinct ID ${{ inputs.distinct_id }}
         env:
-          DISTINCT_ID: ${{ inputs.distinct_id }}
-        run: echo "$DISTINCT_ID"
+          DISTINCT_ID: ${{ toJSON(inputs.distinct_id) }}
+        run: |
+          # @pipe env DISTINCT_ID: string
+          jq -r '.' <<< "$DISTINCT_ID" >&2
       - uses: actions/checkout@v4
         with:
           ref: main
       - name: Parse and update cloud resources
         id: setup
         env:
-          IMAGES_INPUT: ${{ inputs.images }}
-          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+          IMAGES_INPUT: ${{ toJSON(inputs.images) }}
+          DEPLOY_ENVIRONMENT: ${{ toJSON(inputs.environment) }}
         run: |
+          # @pipe env IMAGES_INPUT: string
+          # @pipe env DEPLOY_ENVIRONMENT: string
           set -euo pipefail
 
-          parsed_images_json="$(.github/scripts/parse-cloud-images.sh "$IMAGES_INPUT")"
+          parsed_images_json="$(.github/scripts/parse-cloud-images.sh <<< "$IMAGES_INPUT")"
           update_result_json="$(
-            .github/scripts/update-cloud-images.sh "$DEPLOY_ENVIRONMENT" "$parsed_images_json"
+            jq -cn --argjson environment "$DEPLOY_ENVIRONMENT" --argjson parsed_images "$parsed_images_json" \
+              '{environment: $environment, parsed_images: $parsed_images}' |
+              .github/scripts/update-cloud-images.sh
           )"
 
           target_family="$(jq -er '.target_family' <<< "$update_result_json")"
           kustomization_file_path="$(jq -er '.kustomization_file_path' <<< "$update_result_json")"
+          environment="$(jq -er '.' <<< "$DEPLOY_ENVIRONMENT")"
+          new_branch_name="$(printf 'bump-%s-in-%s-%s' "$target_family" "$environment" "$(date +"%Y%m%d-%H%M%S")")"
+          update_message="$(printf 'chore: bump %s in %s' "$target_family" "$environment")"
           printf 'restart_targets=%s\n' "$(jq -c '.restart_targets' <<< "$update_result_json")" >> "$GITHUB_OUTPUT"
           {
-            printf 'NEW_BRANCH_NAME=bump-%s-in-%s-%s\n' "$target_family" "$DEPLOY_ENVIRONMENT" "$(date +"%Y%m%d-%H%M%S")"
-            printf 'KUSTOMIZATION_FILE_PATH=%s\n' "$kustomization_file_path"
-            printf 'CLOUD_UPDATE_MESSAGE=chore: bump %s in %s\n' "$target_family" "$DEPLOY_ENVIRONMENT"
+            printf 'NEW_BRANCH_NAME=%s\n' "$(jq -cn --arg value "$new_branch_name" '$value')"
+            printf 'KUSTOMIZATION_FILE_PATH=%s\n' "$(jq -cn --arg value "$kustomization_file_path" '$value')"
+            printf 'CLOUD_UPDATE_MESSAGE=%s\n' "$(jq -cn --arg value "$update_message" '$value')"
           } >> "$GITHUB_ENV"
 
       - name: Need to commit
         id: commit
         run: |
+          # @pipe env KUSTOMIZATION_FILE_PATH: string
           set -euo pipefail
+          kustomization_file_path="$(jq -er '.' <<< "$KUSTOMIZATION_FILE_PATH")"
           status=0
-          git diff --quiet -- "$KUSTOMIZATION_FILE_PATH" || status=$?
+          git diff --quiet -- "$kustomization_file_path" || status=$?
           case "$status" in
             0) echo "need_commit=false" ;;
             1) echo "need_commit=true" ;;
@@ -89,30 +100,47 @@ jobs:
       - name: Commit and push
         if: steps.commit.outputs.need_commit == 'true'
         env:
-          ACTOR: ${{ github.actor }}
+          ACTOR: ${{ toJSON(github.actor) }}
         run: |
+          # @pipe env ACTOR: string
+          # @pipe env NEW_BRANCH_NAME: string
+          # @pipe env KUSTOMIZATION_FILE_PATH: string
+          # @pipe env CLOUD_UPDATE_MESSAGE: string
           set -euo pipefail
+          actor="$(jq -er '.' <<< "$ACTOR")"
+          new_branch_name="$(jq -er '.' <<< "$NEW_BRANCH_NAME")"
+          kustomization_file_path="$(jq -er '.' <<< "$KUSTOMIZATION_FILE_PATH")"
+          update_message="$(jq -er '.' <<< "$CLOUD_UPDATE_MESSAGE")"
 
-          git config user.name "$ACTOR"
-          git config user.email "$ACTOR@users.noreply.github.com"
+          git config user.name "$actor"
+          git config user.email "$actor@users.noreply.github.com"
 
-          git checkout -b "$NEW_BRANCH_NAME"
-          git add -- "$KUSTOMIZATION_FILE_PATH"
-          git commit -m "$CLOUD_UPDATE_MESSAGE"
-          git push origin "$NEW_BRANCH_NAME"
+          git checkout -b "$new_branch_name"
+          git add -- "$kustomization_file_path"
+          git commit -m "$update_message"
+          git push origin "$new_branch_name"
 
       - name: Create PR
         if: steps.commit.outputs.need_commit == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GH_TOKEN_JSON: ${{ toJSON(github.token) }}
+          GH_REPO_JSON: ${{ toJSON(github.repository) }}
         run: |
+          # @pipe env GH_TOKEN_JSON: string
+          # @pipe env GH_REPO_JSON: string
+          # @pipe env CLOUD_UPDATE_MESSAGE: string
+          # @pipe env NEW_BRANCH_NAME: string
           set -euo pipefail
+          GH_TOKEN="$(jq -er '.' <<< "$GH_TOKEN_JSON")"
+          GH_REPO="$(jq -er '.' <<< "$GH_REPO_JSON")"
+          export GH_TOKEN GH_REPO
+          update_message="$(jq -er '.' <<< "$CLOUD_UPDATE_MESSAGE")"
+          new_branch_name="$(jq -er '.' <<< "$NEW_BRANCH_NAME")"
           gh pr create \
-            --title "$CLOUD_UPDATE_MESSAGE" \
-            --body "$CLOUD_UPDATE_MESSAGE" \
+            --title "$update_message" \
+            --body "$update_message" \
             --base main \
-            --head "$NEW_BRANCH_NAME" \
+            --head "$new_branch_name" \
             --repo "$GH_REPO"
 
   restart_aws:
@@ -120,9 +148,9 @@ jobs:
     if: ${{ needs.update.outputs.need_commit == 'false' && inputs.environment != 'prod' && fromJSON(needs.update.outputs.restart_targets).aws != null }}
     uses: ./.github/workflows/do-rollout-restart.yaml
     with:
-      platform: aws
-      namespace: ${{ fromJSON(needs.update.outputs.restart_targets).aws.namespace }}
-      name: ${{ join(fromJSON(needs.update.outputs.restart_targets).aws.deployments, ' ') }}
+      platform: ${{ toJSON('aws') }}
+      namespace: ${{ toJSON(fromJSON(needs.update.outputs.restart_targets).aws.namespace) }}
+      name: ${{ toJSON(join(fromJSON(needs.update.outputs.restart_targets).aws.deployments, ' ')) }}
     secrets: inherit
 
   restart_huaweicloud:
@@ -135,7 +163,7 @@ jobs:
           fromJSON(needs.update.outputs.restart_targets).huaweicloud != null }}
     uses: ./.github/workflows/do-rollout-restart.yaml
     with:
-      platform: huaweicloud
-      namespace: ${{ fromJSON(needs.update.outputs.restart_targets).huaweicloud.namespace }}
-      name: ${{ join(fromJSON(needs.update.outputs.restart_targets).huaweicloud.deployments, ' ') }}
+      platform: ${{ toJSON('huaweicloud') }}
+      namespace: ${{ toJSON(fromJSON(needs.update.outputs.restart_targets).huaweicloud.namespace) }}
+      name: ${{ toJSON(join(fromJSON(needs.update.outputs.restart_targets).huaweicloud.deployments, ' ')) }}
     secrets: inherit

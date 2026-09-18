@@ -4,6 +4,8 @@
 
 接口声明仅支持 `stdin: <模板>`、`stdout: <模板>` 和 `env NAME: <模板>`。业务参数通过 stdin JSON 或声明的环境变量传入，不支持位置参数声明。对象使用带双引号的 JSON key；占位符不加引号，字面量使用 JSON 语法。
 
+`stdin` 与 `stdout` 均可省略，分别表示没有输入通道、没有业务返回接口；这不是 `void`/`unknown` 或 JSON null 类型。已声明的接口仍严格要求一个 JSON 值。没有 stdout 接口的脚本可以独立调用，但不能把其 stdout 捕获、解析或传给下游作为业务数据；报告 `PIPE104`，不从日志反推返回类型。CI 的命名 outputs 按平台显式映射判断，独立于 run 的 stdout。
+
 | 模板 | 接受的 JSON 值 |
 | --- | --- |
 | `string`、`number`、`boolean`、`null` | 对应 JSON 类型；number 不包括 NaN/Infinity |
@@ -34,7 +36,7 @@ JSON 字符串必须编码：传入 `"Alice"` 符合 `string`，裸文本 `Alice
 检查器在 JSON 类型之外维护以下事实，**这些事实不能写进接口模板**：
 
 - **编码事实**：是否为合法 JSON、精确字节、首尾分隔符。脚本内部可以暂存原始字符，用于日志、控制信息或显式 JSON 编码，但不得直接穿过 JSON 数据接口。
-- **数量**：jq 结果流的 `[min,max]`；数组长度与流数量分开。接口值始终要求恰好一项，多结果必须收集为数组。
+- **数量**：jq 结果流的 `[min,max]`；数组长度与流数量分开。已声明的接口值始终要求恰好一项，多结果必须收集为数组；没有返回接口不是一个零项的 JSON 类型。
 - **状态**：shell 变量是否设置、stdin 是否耗尽、退出状态、可达路径、作用域与副作用。
 - **来源和完整性**：事实来自常量、输入声明、外部命令契约或已分析的转换；无法建立事实时记录原因与受影响范围。
 
@@ -48,9 +50,11 @@ JSON 字符串必须编码：传入 `"Alice"` 符合 `string`，裸文本 `Alice
 
 支持静态 filter：`.`、`.foo`、`.foo.bar`、`.["foo"]`、`.[0]`、`.[]`；JSON 字面量、数组收集、静态 key 对象构造与 `{key}`；括号、管道、逗号、`//`；`--arg/--argjson` 绑定的变量；`select` 与对字面量的 `==/!=`；数组 `map`；`length/type/has("key")/tostring/tonumber/fromjson/tojson/ascii_upcase`。
 
-先解析 Bash argv，再解析 jq options/filter。支持 `-n/-c/-r/-s`、对应长选项、短选项组合、`--arg/--argjson` 和 `--`。`-n -s`、文件参数、`-f/-R/-j/-e/--stream` 等首版未建模的组合/选项明确报告受阻；不忽略选项或 filter 后缀。
+先解析 Bash argv，再解析 jq options/filter。支持 `-n/-c/-r/-s/-e`、对应长选项、短选项组合、`--arg/--argjson` 和 `--`。`-n -s`、文件参数、`-f/-R/-j/--stream` 等首版未建模的组合/选项明确报告受阻；不忽略选项或 filter 后缀。
 
-有效 jq 超出子集（如 def、reduce、动态 key、字符串插值、算术、模块）不冒充语法错误。动态 filter 不能按固定前缀推导。恢复树可用于编辑功能，损坏/不支持的节点不能参与通过证明。
+首版另覆盖 case 1 所需的 `-e`（包括 `-er/-cn` 等组合）、`as` 绑定、`if/then/elif/else/end`、`and/or/not`、比较、字符串/数组/对象的 `+`、`split/index/unique/all/error`、`reduce`、动态索引、`=/+=/|=//=` 更新。动态 key 在已证明的有限平台集合（aws/huaweicloud）上展开为封闭对象备选，不新增开放对象类型；无法证明 key 范围时仍受阻。tag/digest 两种对象用完整对象联合表达，restart_targets 用空对象、单平台、双平台四种完整对象联合表达，不把缺失字段偷换成 null。
+
+有效 jq 超出子集（如 def、字符串插值、模块或未建模的算术）不冒充语法错误。动态 filter 不能按固定前缀推导。恢复树可用于编辑功能，损坏/不支持的节点不能参与通过证明。上述扩展是待实现范围，不表示当前已有分析器。
 
 ### 必须保持的规则
 
@@ -60,6 +64,7 @@ JSON 字符串必须编码：传入 `"Alice"` 符合 `string`，裸文本 `Alice
 | `-n` / `-s` | `-n` 不读 stdin，单次以 null 运行；`-s` 读完输入并收集为一个数组，再运行一次 |
 | `--arg` / `--argjson` | 前者将原始字符编码成 jq string；后者要求参数恰好包含一个 JSON 值 |
 | `-r` | string 项输出未加 JSON 引号的内容；其他 JSON 值仍编码。原始内容只有另行证明符合 JSON 才能再作 JSON 输入/输出 |
+| `-e` | 输出编码和数量不变；按最后输出值区分成功、false/null 或无结果的非零状态，并保留解析/运行错误；不能把 `-e` 当结构断言或过滤器 |
 | 字段访问 | jq 对缺 key 或 null 取字段得到 null；number/string/boolean 上取对象字段报错。按本项目接口策略，直接访问封闭对象未声明的 key 给 `PIPE102`，不声称 jq 本身拒绝该访问；`has("key")` 则检查存在性 |
 | 索引/迭代 | 数组越界得 null，长度不能确定时保留 null 可能；`.[]` 对数组/对象发射元素，非容器报错 |
 | `f,g` / `f \| g` | 前者发射数量相加；后者对每个 f 结果运行 g，按类型与数量组合，不假定一对一 |
@@ -69,8 +74,10 @@ JSON 字符串必须编码：传入 `"Alice"` 符合 `string`，裸文本 `Alice
 | `select` | 数量下界通常降为 0；受支持的 `select(.name != null)` 可细化后续字段，复杂关系不猜测 |
 | `length/type` | length 接受 string/array/object，null 得 0，number 得绝对值，boolean 报错；type 返回 JSON 类型名字符串 |
 | 转换 | ascii_upcase 要求 string；tonumber/fromjson 需能证明内容可转换，否则检查受阻；tojson 保留 JSON 编码来源，tostring 对 string 原样返回 |
+| `if/as/all/error` | 保留分支、绑定作用域和结果数量；空数组上的 all 为 true；error 是失败路径，不能被当作成功的空结果 |
+| `reduce` 与更新 | 为 accumulator 建立固定点和输入/输出形状，覆盖空迭代与多结果；动态路径更新保留字段存在性，`//=` 与 `+=` 不可视为无条件同类型赋值，超预算明确受阻 |
 
-数量用区间保守包围，分支取包络而非相加；接口要求 `[1,1]`。`empty` 为零项，`[empty]` 为一项空数组；不能用调用方期望数量收窄实际结果。类型/分支组合超预算时报告受阻，不退化成兜底类型。
+数量用区间保守包围，分支取包络而非相加；已声明的接口要求 `[1,1]`。`empty` 为零项，`[empty]` 为一项空数组；不能用调用方期望数量收窄实际结果。类型/分支组合超预算时报告受阻，不退化成兜底类型。
 
 ## 4. Bash 数据流
 
@@ -80,8 +87,17 @@ JSON 字符串必须编码：传入 `"Alice"` 符合 `string`，裸文本 `Alice
 - `x=$(cmd)` 捕获 stdout 并删除所有尾部 LF；通常不改变合法 JSON 值，但会改变原始字符串。NUL 无法保留时诊断。`"$x"` 是一个 argv，不把多项 JSON 自动变成数组。
 - 带前后缀的拼接必须重新检查编码/分隔。`printf '%s' '1'; printf '%s' '2'` 输出 JSON number 12，不是两项；分别追加 LF 才是两项，此时不符合单值接口。
 - 子 shell/命令替换/管道隔离 shell 变量写入；`export` 决定子进程环境；命令前赋值不泄漏。函数遮蔽先于外部签名解析。支持静态 cwd 和简单 stdout/stderr 重定向，按顺序处理 `2>&1`。
-- 支持有限 `if`、静态 `exit`、`set -e/-u/-o pipefail` 上下文；分支合并变量、输入消费与输出事实。不从任意 test 推导 JSON 类型保护。
-- echo、复杂 printf、循环、`&&/||`、source/eval、复杂展开/重定向等首版给受影响范围的缺口；后续按真实脚本频率补齐。可能修改变量、命令解析或 cwd 的语句使相关事实失效，不能跳过后继续证明整个脚本。
+- 首版覆盖 case 1 的 `if/elif/case`、`for/while`、`continue`、函数和 return/exit 状态、`!`、`&&/||`、`$?`、算术计数以及 `set -e/-u/-o pipefail`；分支合并变量、输入消费与输出事实。对有限 case、常量比较和 has/type 检查建模细化，不从任意 test 猜测 JSON 类型保护。
+- 首版覆盖 case 1 的数组赋值/展开、`read -r/-a` 与 IFS（逗号、tab、逐行）、`[[ ]]` glob/正则、前后缀删除、字符串追加、`${BASH_SOURCE[0]}`、带引号拼接、固定格式多参数 printf、echo、命令组及重定向/追加、进程替换 `< <(...)`。循环须有固定点及作用域/effect 摘要；进程替换是独立通道，其失败不能自动等同于主 shell 或 pipefail 失败。
+- `source/eval`、无法恢复的动态命令/filter 和范围外的复杂展开/重定向仍给受影响范围的缺口。可能修改变量、命令解析或 cwd 的语句使相关事实失效，不能跳过后继续证明整个脚本。
+
+### 外部工具与本地文件
+
+首版随工具内置 case 1 使用的 dirname/pwd/date、yq、git 和 gh 的限定命令模型，明确 argv/env、stdout、退出状态、stdin 消费和文件/远程副作用；未知调用仍给 `PIPE201/PIPE202`。原生工具参数不强制改为 JSON，但跨脚本/CI 的业务接口必须 JSON 编码。
+
+- TSV allowlist 和业务 YAML 通过项目内只读快照建立来源，建模 read/IFS 与 yq 的 YAML→JSON 转换；这不是读取 pipe-ls 项目配置。缺失文件不能靠下游声明补推断。
+- yq 覆盖 case 1 的 eval/eval-all、`-o=json/-r/-e/-i`、strenv、select、字段访问、赋值和 del，以及由已知 selector 常量和有限字段名组成的 filter。建模预期文件更新，不实际写盘；后续读取需使用可证明的内存 effect，否则受阻。
+- git diff 的 0/1/其他退出码及无 stdout 行为单独建模；git 写入/push 和 gh pr create 只记录效果及成功/失败分支，分析时绝不执行，也不访问远程或真实 token。无返回接口的 run 不把命令日志当业务 output。
 
 ### stdin 是会被消费的通道
 
@@ -94,7 +110,9 @@ JSON 字符串必须编码：传入 `"Alice"` 符合 `string`，裸文本 `Alice
 
 ### stdout 与失败路径
 
-检查所有成功退出路径上未重定向的 stdout **整体**是否恰好为一个匹配模板的 JSON 值，不只检查最后一条命令。空输出、多个值、日志污染或未完成分析的输出都不能通过。没有业务返回值也要输出 `null`。
+声明 stdout 时，检查所有成功退出路径上未重定向的 stdout **整体**是否恰好为一个匹配模板的 JSON 值，不只检查最后一条命令。空输出、多个值、日志污染或未完成分析的返回值都不能通过；包括声明 `stdout: null` 时也必须实际输出 null。
+
+省略 stdout 表示无业务返回值，允许空输出或非返回用途的命令日志，不做 JSON 返回值数量/结构匹配，也不因省略声明报错。建议日志走 stderr；调用方不得通过命令替换、管道或重定向后再解析等方式把日志变为业务返回值。无返回值不免除输入、退出状态、文件/环境副作用及命令解析检查。
 
 保留命令正常完成与失败时的部分输出/输入消费摘要。最终 exit 0 不能证明之前所有命令成功；管道默认只取末条退出状态，pipefail 不回滚已输出内容。已发现的 jq 类型错误、显式失败或失败后继续不能被抹去；相关恢复路径未建模时报告受阻。非零退出不要求成功返回模板，日志应走 stderr。
 
@@ -132,3 +150,7 @@ jq -r '.name'
 | stdin number，stdout number，执行 `jq '.'; jq '.'` | 只输出入口的一项，第二次读到 EOF；不重复推导输入 |
 | stdin null，stdout number，执行无签名 `business-command` | `PIPE201`，检查受阻；不赋予兜底类型，不按 stdout 声明补推断 |
 | stdin null，stdout null，仅执行 `printf '%s\n' 'log' >&2` | `PIPE103`，没有返回 JSON null |
+| 省略 stdin/stdout，仅执行 `printf '%s\n' 'log' >&2` | 符合，无业务返回值 |
+| 省略 stdout 的脚本被独立调用 | 不因缺少返回声明而报错，仍检查正文与输入 |
+| 捕获省略 stdout 的脚本输出，再交给 jq 或另一脚本 | `PIPE104`，没有可消费的返回接口 |
+| reusable CI 没有声明 workflow outputs，调用方读取其 output | 契约错误，不能从内部 job 或日志生成返回类型 |
