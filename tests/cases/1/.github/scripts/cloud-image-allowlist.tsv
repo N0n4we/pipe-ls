@@ -1,0 +1,33 @@
+# deployment_name: space-separated Deployment names; "-" means update only.
+# target_family	platform	repository	image_name	deployment_name
+cloud	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-admin-frontend	cloud-admin-frontend	cloud-admin cloud
+cloud	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-admin-backend	cloud-admin-backend	cloud-admin cloud
+cloud	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-backend	cloud-backend	cloud-admin cloud
+cloud	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-tasks	cloud-tasks	cloud-admin cloud
+cloud	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-frontend	cloud-frontend	cloud-admin cloud
+cloud	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-metrics-gateway	cloud-metrics-gateway	cloud-metrics-gateway
+cloud	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/support-portal	support-portal	support-portal
+cloud	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-admin-frontend	cloud-admin-frontend	cloud-admin cloud
+cloud	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-admin-backend	cloud-admin-backend	cloud-admin cloud
+cloud	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-backend	cloud-backend	cloud-admin cloud
+cloud	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-tasks	cloud-tasks	cloud-admin cloud
+cloud	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-frontend	cloud-frontend	cloud-admin cloud
+cloud	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-metrics-gateway	cloud-metrics-gateway	cloud-metrics-gateway
+cloud	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/support-portal	support-portal	support-portal
+cloud-auth	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-auth-frontend	cloud-auth-frontend	cloud-auth
+cloud-auth	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-auth-backend	cloud-auth-backend	cloud-auth
+cloud-auth	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-auth-frontend	cloud-auth-frontend	cloud-auth
+cloud-auth	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-auth-backend	cloud-auth-backend	cloud-auth
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-omp-server	cloud-omp-server	omp
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-sre-bot	cloud-sre-bot	cloud-sre-bot
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-cost-exporter	cloud-cost-exporter	-
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-insight-agent	cloud-insight-agent	cloud-insight-agent
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-omp-server	cloud-omp-server	omp
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-sre-bot	cloud-sre-bot	cloud-sre-bot
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-insight-agent	cloud-insight-agent	cloud-insight-agent
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-sre-insight-backend	cloud-sre-insight-backend	cloud-sre-insight-backend
+omp	aws	xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-sre-insight-frontend	cloud-sre-insight-frontend	cloud-sre-insight-frontend
+omp	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-omp-server	cloud-omp-server	omp
+omp	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-sre-bot	cloud-sre-bot	cloud-sre-bot
+omp	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-cost-exporter	cloud-cost-exporter	-
+omp	huaweicloud	swr.cn-east-3.myhuaweicloud.com/cloud-console/cloud-insight-agent	cloud-insight-agent	cloud-insight-agent

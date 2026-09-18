@@ -1,0 +1,141 @@
+name: Update Cloud And OMP Resources
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      distinct_id:
+        description: For https://github.com/Codex-/return-dispatch
+        required: false
+        type: string
+      environment:
+        description: Environment to deploy to
+        type: choice
+        required: true
+        default: staging
+        options:
+          - dev
+          - pre-dev
+          - test
+          - staging
+          - prod ## Just for OMP
+      images:
+        description: |
+          Comma-separated allowlisted image references from one target family; use repo:tag or repo@sha256:<64 lowercase hex characters>, without whitespace.
+          Example: xxxxxxxxxxxx.dkr.ecr.us-west-2.amazonaws.com/cloud-admin-frontend:dev
+        required: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    defaults:
+      run:
+        shell: bash
+
+    outputs:
+      need_commit: ${{ steps.commit.outputs.need_commit }}
+      restart_targets: ${{ steps.setup.outputs.restart_targets }}
+
+    steps:
+      - name: Echo distinct ID ${{ inputs.distinct_id }}
+        env:
+          DISTINCT_ID: ${{ inputs.distinct_id }}
+        run: echo "$DISTINCT_ID"
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Parse and update cloud resources
+        id: setup
+        env:
+          IMAGES_INPUT: ${{ inputs.images }}
+          DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+
+          parsed_images_json="$(.github/scripts/parse-cloud-images.sh "$IMAGES_INPUT")"
+          update_result_json="$(
+            .github/scripts/update-cloud-images.sh "$DEPLOY_ENVIRONMENT" "$parsed_images_json"
+          )"
+
+          target_family="$(jq -er '.target_family' <<< "$update_result_json")"
+          kustomization_file_path="$(jq -er '.kustomization_file_path' <<< "$update_result_json")"
+          printf 'restart_targets=%s\n' "$(jq -c '.restart_targets' <<< "$update_result_json")" >> "$GITHUB_OUTPUT"
+          {
+            printf 'NEW_BRANCH_NAME=bump-%s-in-%s-%s\n' "$target_family" "$DEPLOY_ENVIRONMENT" "$(date +"%Y%m%d-%H%M%S")"
+            printf 'KUSTOMIZATION_FILE_PATH=%s\n' "$kustomization_file_path"
+            printf 'CLOUD_UPDATE_MESSAGE=chore: bump %s in %s\n' "$target_family" "$DEPLOY_ENVIRONMENT"
+          } >> "$GITHUB_ENV"
+
+      - name: Need to commit
+        id: commit
+        run: |
+          set -euo pipefail
+          status=0
+          git diff --quiet -- "$KUSTOMIZATION_FILE_PATH" || status=$?
+          case "$status" in
+            0) echo "need_commit=false" ;;
+            1) echo "need_commit=true" ;;
+            *) exit "$status" ;;
+          esac >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.commit.outputs.need_commit == 'true'
+        env:
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "$ACTOR"
+          git config user.email "$ACTOR@users.noreply.github.com"
+
+          git checkout -b "$NEW_BRANCH_NAME"
+          git add -- "$KUSTOMIZATION_FILE_PATH"
+          git commit -m "$CLOUD_UPDATE_MESSAGE"
+          git push origin "$NEW_BRANCH_NAME"
+
+      - name: Create PR
+        if: steps.commit.outputs.need_commit == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh pr create \
+            --title "$CLOUD_UPDATE_MESSAGE" \
+            --body "$CLOUD_UPDATE_MESSAGE" \
+            --base main \
+            --head "$NEW_BRANCH_NAME" \
+            --repo "$GH_REPO"
+
+  restart_aws:
+    needs: update
+    if: ${{ needs.update.outputs.need_commit == 'false' && inputs.environment != 'prod' && fromJSON(needs.update.outputs.restart_targets).aws != null }}
+    uses: ./.github/workflows/do-rollout-restart.yaml
+    with:
+      platform: aws
+      namespace: ${{ fromJSON(needs.update.outputs.restart_targets).aws.namespace }}
+      name: ${{ join(fromJSON(needs.update.outputs.restart_targets).aws.deployments, ' ') }}
+    secrets: inherit
+
+  restart_huaweicloud:
+    needs: [update, restart_aws]
+    # Override implicit success() to allow Huawei-only runs when AWS is skipped.
+    if: >-
+      ${{ !cancelled() && needs.update.result == 'success' &&
+          (needs.restart_aws.result == 'success' || needs.restart_aws.result == 'skipped') &&
+          needs.update.outputs.need_commit == 'false' && inputs.environment != 'prod' &&
+          fromJSON(needs.update.outputs.restart_targets).huaweicloud != null }}
+    uses: ./.github/workflows/do-rollout-restart.yaml
+    with:
+      platform: huaweicloud
+      namespace: ${{ fromJSON(needs.update.outputs.restart_targets).huaweicloud.namespace }}
+      name: ${{ join(fromJSON(needs.update.outputs.restart_targets).huaweicloud.deployments, ' ') }}
+    secrets: inherit
