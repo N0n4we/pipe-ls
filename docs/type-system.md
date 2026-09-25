@@ -54,7 +54,9 @@ JSON 字符串必须编码：传入 `"Alice"` 符合 `string`，裸文本 `Alice
 
 首版另覆盖 case 1 所需的 `-e`（包括 `-er/-cn` 等组合）、`as` 绑定、`if/then/elif/else/end`、`and/or/not`、比较、字符串/数组/对象的 `+`、`split/index/unique/all/error`、`reduce`、动态索引、`=/+=/|=//=` 更新。动态 key 在已证明的有限平台集合（aws/huaweicloud）上展开为封闭对象备选，不新增开放对象类型；无法证明 key 范围时仍受阻。tag/digest 两种对象用完整对象联合表达，restart_targets 用空对象、单平台、双平台四种完整对象联合表达，不把缺失字段偷换成 null。
 
-有效 jq 超出子集（如 def、字符串插值、模块或未建模的算术）不冒充语法错误。动态 filter 不能按固定前缀推导。恢复树可用于编辑功能，损坏/不支持的节点不能参与通过证明。上述扩展是待实现范围，不表示当前已有分析器。
+另限定支持 `test("[!-~]")`：只判定是否含 ASCII graphic 字符，不是一般正则支持。直接 root 的 conjunctive `select(type == "string" and test("[!-~]") and ...)` 在受检查成功路径上证明解码后 payload 经 JavaScript `String.trim` 仍非空；OR、其他 binding/子字段、变换和单侧分支不能借用该事实。JSON wire 本身非空不证明 payload 非空；状态合并需两侧均具有证明。
+
+有效 jq 超出子集（如 def、字符串插值、模块或未建模的算术）不冒充语法错误。动态 filter 不能按固定前缀推导。恢复树可用于编辑功能，损坏/不支持的节点不能参与通过证明；一般 jq/Bash 语义仍不属首版完整支持。
 
 ### 必须保持的规则
 
@@ -98,6 +100,17 @@ JSON 字符串必须编码：传入 `"Alice"` 符合 `string`，裸文本 `Alice
 - TSV allowlist 和业务 YAML 通过项目内只读快照建立来源，建模 read/IFS 与 yq 的 YAML→JSON 转换；这不是读取 pipe-ls 项目配置。缺失文件不能靠下游声明补推断。
 - yq 覆盖 case 1 的 eval/eval-all、`-o=json/-r/-e/-i`、strenv、select、字段访问、赋值和 del，以及由已知 selector 常量和有限字段名组成的 filter。建模预期文件更新，不实际写盘；后续读取需使用可证明的内存 effect，否则受阻。
 - git diff 的 0/1/其他退出码及无 stdout 行为单独建模；git 写入/push 和 gh pr create 只记录效果及成功/失败分支，分析时绝不执行，也不访问远程或真实 token。无返回接口的 run 不把命令日志当业务 output。
+- 开发构建可接收宿主提供的已验证原生 env 事实；不读取本机环境，不凭 raw 字符自动建立 JSON 输入。显式契约仍是业务接口前提，额外已知反例不能被声明覆盖。step env 覆盖前序全局环境，`GITHUB_ENV` 覆盖 workflow/job 的旧默认值；未知/条件写入后不能重新信任旧默认值。非空/未知 `BASH_ENV` 的启动代码仍受阻。
+- `curl` 仅建模受检查失败的独立下载语句：首个参数 `--disable` 禁用 `.curlrc`，`--globoff` 关闭 URL 展开，`--proto/--proto-redir '=https'` 限定协议，显式 `--url/--output` 和固定非负整数 retry，以及 `--fail/--silent/--show-error/--location`。文件名必须证明非空且不是 stdout 哨兵 `-`；未知完整路径只给未知文件写入摘要。`SSLKEYLOGFILE` 等辅助写入未解析，故即使 output 路径有限也保留 `filesMayWriteUnknown`，撤销后续快照/命名 env/output 证明。无法固定配置、协议、参数或退出状态时受阻；不验证网络成功、下载内容或 SHA256，也不执行 curl。选项语义依据 [curl 手册](https://curl.se/docs/manpage.html)。
+- 当前另有 AWS CLI v2 的有限 EKS 命令模型：只接受显式 region、JSON `clusters` 投影及禁用 pager/auto-prompt 的查询，输出为 `[string] | null`；返回事实以已检查的成功路径为前提，`export`/`printf` 掩盖命令替换失败时不能借用外层 `set -e`。字符串 `contains` 已建模，数组/对象 contains 仍受阻。`update-kubeconfig` 不提供可消费的业务 stdout；未解析的文件写入撤销后续文件/目录/脚本快照事实，并跨本地脚本及 GitHub step 传播，不虚构 kubeconfig 内容。
+- `sha256sum --check -` 只接受受 `errexit/pipefail` 检查的普通管道，stdin 必须是一条 64 位十六进制 digest、两个空格和非空/非 `-` 文件名的记录。文件名不能含 CR/LF/NUL；Unicode、空格和字面反斜杠保留。不支持额外选项、吞失败或消费原生日志。固定 `printf '%s  %s\n'` 可结合已验证的未知文件名建立记录事实；直接作用于当前字符串的 jq `select(index("\n") == null and index("\r") == null and index("\u0000") == null)` 可在受检查的成功路径上证明 payload 无上述字符。JSON wire 的单行事实与解码后的 string payload 分开，变换或未受保护的分支不得继承 payload 证明。只摘要 `sha256sum check`，不读取 artifact、不证明下载内容匹配，也不撤销已有未知文件写入标记。
+- 文件系统模型限定为受检查的命令：`mktemp [-d] -- <至少六个尾部字面 X 的模板>`、`mkdir -p --`、固定解压 flags、`install -m 0755 --`／`sudo -n -- install`、`test -s`、`mv -f --` 和 `rm -f --`。`mktemp` 的成功路径只产生未知原生路径及来源标记，不虚构随机字节；递归删除和 tar 解压目录要求此标记。tar 另要求显式导出的空 `TAR_OPTIONS`、非 stdin 哨兵 archive、`--no-same-owner/--no-same-permissions`，不验证归档成员/安装内容。路径操作始终保留未知写入摘要；有限路径仅是词法目标，不证明 symlink、目录目标、归档成员或 sudo 辅助程序的完整效果。
+- 固定 `trap 'rm -f -- "$变量"' EXIT` 或 `trap 'rm -rf -- "$变量"' EXIT` 只接受不可重新赋值的 mktemp 路径，并检查 rm 遮蔽；它只产生延期 may-effects，不证明中断/失败后一定清理。普通单条 `> "$path"` 在命令调用前记录创建/截断效果，不把文件内容当成 stdout 返回或已验证快照；多重/追加/复杂重定向仍受阻。未解析写入可能截断尚未消费的入口文件，因此剩余 stdin 事实撤销；已捕获到 shell 变量的 JSON 不受此影响。checksum 的文件读取也不据记录管道推断父入口流一定未被设备/proc 路径消费。
+- 华为 CLI 仅建模固定 configure/version 和 CCE `/v3` 命令族；查询要求同一正文的已检查 warning/privacy 配置、显式 region/project/JSON，以及 `{items: items[*].{uid: metadata.uid}}` 投影。投影闭合为 `{"items": [{"uid": string | null}] | null}`，不闭合原 API，也不因缺 UID 丢失 item。直接 root `select(type == "string" and ...)` 可细化 nullable UID；OR、常量、字段/绑定的类型检查不能被借给 root。原生日志和证书字节不能消费为 JSON 返回，所有命令仍有未知 cache/config/log 文件效果，CLI 不执行 hcloud。完整参数、回退风险和来源见 [action 模型审计](action-model-audit.md)。
+- retry@v3 的限定 Bash envelope 检查静态 inputs/timeout/attempts 和 main/alternate 正文，runner 注入的全部 `INPUT_*`（含默认空值）覆盖 YAML/global env；两正文使用同一 action-entry env，不从前一尝试的 GITHUB_ENV 推断后一尝试输入。只传播重复/失败/中断的 may-effects，文件/环境/startup/命名 outputs 的确定事实不外传；signal/null 退出不能证明完整执行。正文不能声明未注入的 stdin，stdout/stderr 合并日志也不是 action 返回。未知选项、动态代码或非空 default-shell hook 仍受阻，CLI 不运行 action。
+- 1Password configure/load 的限定 Action envelope 保留未知环境、startup 与文件效果，不访问秘密或安装 op。output-only load 的名字集合开放且可缺失：直接 env 引用仅为原生 string（缺失时为空串），`toJSON` 是 `string | null`，既不证明非空，也不根据 step.env 假造确定生产者。环境模式仍没有秘密 outputs，可缺失输出不能作为必需 job output。显式空 step BASH_ENV 可恢复启动事实，不能恢复旧 global env 或仓库快照。
+- AWS credentials@v4 仅支持显式 IAM AK/SK，两个输入需证明按 `getInput` 的 JS trim 后非空；直接 secret 引用或可缺失输出不能提供该证明。role/role-chaining/use-existing 必须固定禁用，AWS_PROFILE 和 HTTP_PROXY/HTTPS_PROXY 必须证明为实际空串（空白 profile 不等于空串）。保留未解析 SDK/文件/环境/startup 效果，只汇总 identity-query 和 job-end post cleanup 的 may-effects，不在后续 step 提前清空或建立确定 AWS env。输出是限定名称、可缺失的原生 string，`toJSON` 仍为 `string | null`；未知/动态输入、其他认证路径和执行修饰受阻。raw INPUT 与 ambient 回填优先级、cleanup 大小写和固定源码依据见 [action 模型审计](action-model-audit.md)。
+- 固定 sed-filtered name=value 文件可写 GENV 或 GOUT；同样拒绝无效/多行/NUL 来源和未知文件写入后的快照读取。已收集的 step output 与可变 global env 分开，跨 Action 保留不可变 wire 字节；条件 producer 仅在同一稳定 inputs 等值 guard 的 consumer 中可用，不能推断一般条件蕴含或忽略失败/取消，也不能将条件 output 当作必需 job output。
 
 ### stdin 是会被消费的通道
 

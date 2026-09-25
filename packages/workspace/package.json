@@ -1,7 +1,14 @@
 {
   "name": "@pipe-ls/workspace",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Read-only project discovery and snapshots for pipe-ls",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "type": "module",
   "exports": {
     ".": {

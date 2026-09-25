@@ -1,0 +1,250 @@
+name: Do Rollout Restart
+
+on:
+  workflow_call:
+    inputs:
+      kind:
+        description: JSON-encoded kind of the resource to rollout restart
+        default: '"deployment"'
+        type: string
+      platform:
+        description: JSON-encoded cloud platform to configure and restart
+        required: true
+        type: string
+      namespace:
+        description: JSON-encoded namespace to rollout restart
+        required: true
+        type: string
+      name:
+        description: JSON-encoded space-separated Deployment names to rollout restart
+        required: true
+        type: string
+    secrets:
+      CLOUD_ONE_PASSWORD_SERVICE_ACCOUNT_TOKEN:
+        required: true
+
+jobs:
+  restart:
+    runs-on: aliyun-ack
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load pinned tool versions
+        id: tool_versions
+        if: ${{ fromJSON(inputs.platform) == 'huaweicloud' }}
+        shell: bash
+        run: sed -E '/^[[:space:]]*(#|$)/d' .github/tool-versions.env >> "$GITHUB_OUTPUT"
+      - uses: 1password/load-secrets-action/configure@v2
+        env:
+          BASH_ENV: ''
+        with:
+          service-account-token: ${{ secrets.CLOUD_ONE_PASSWORD_SERVICE_ACCOUNT_TOKEN }}
+      - uses: 1password/load-secrets-action@v2
+        id: load_secrets
+        with:
+          export-env: false
+        env:
+          BASH_ENV: ''
+          AWS_ACCESS_KEY_ID: op://cloud-kms-devtest/sre-account/aws/aws-access-key-id
+          AWS_SECRET_ACCESS_KEY: op://cloud-kms-devtest/sre-account/aws/aws-secret-access-key
+          HW_ACCESS_KEY: op://cloud-kms-devtest/sre-account/huaweicloud/hw-access-key
+          HW_SECRET_KEY: op://cloud-kms-devtest/sre-account/huaweicloud/hw-secret-key
+
+      - name: Validate restart target
+        env:
+          BASH_ENV: ''
+          RESTART_PLATFORM_JSON: ${{ inputs.platform }}
+          RESTART_NAMESPACE_JSON: ${{ inputs.namespace }}
+          RESTART_NAME_JSON: ${{ inputs.name }}
+          RESTART_KIND_JSON: ${{ inputs.kind }}
+        run: |
+          # @pipe env RESTART_PLATFORM_JSON: string
+          # @pipe env RESTART_NAMESPACE_JSON: string
+          # @pipe env RESTART_NAME_JSON: string
+          # @pipe env RESTART_KIND_JSON: string
+          set -euo pipefail
+          restart_platform="$(jq -er 'select(type == "string" and index("\u0000") == null)' <<< "$RESTART_PLATFORM_JSON")"
+          restart_namespace="$(jq -er 'select(type == "string" and index("\u0000") == null)' <<< "$RESTART_NAMESPACE_JSON")"
+          restart_name="$(jq -er 'select(type == "string" and index("\u0000") == null)' <<< "$RESTART_NAME_JSON")"
+          restart_kind="$(jq -er 'select(type == "string" and index("\u0000") == null)' <<< "$RESTART_KIND_JSON")"
+          case "$restart_platform" in
+            aws|huaweicloud) ;;
+            *)
+              printf 'ERROR: unsupported restart platform.\n' >&2
+              exit 1
+              ;;
+          esac
+          [[ ${#restart_namespace} -le 63 && "$restart_namespace" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || {
+            printf 'ERROR: invalid restart namespace.\n' >&2
+            exit 1
+          }
+          case "$restart_kind" in
+            deployment|daemonset|statefulset) ;;
+            *)
+              printf 'ERROR: unsupported restart resource kind.\n' >&2
+              exit 1
+              ;;
+          esac
+          restart_names_pattern='^[a-z0-9]([-a-z0-9.]*[a-z0-9])?( [a-z0-9]([-a-z0-9.]*[a-z0-9])?)*$'
+          [[ "$restart_name" =~ $restart_names_pattern ]] || {
+            printf 'ERROR: invalid restart resource names.\n' >&2
+            exit 1
+          }
+          read -r -a restart_names <<< "$restart_name"
+          for restart_target in "${restart_names[@]}"; do
+            [[ ${#restart_target} -le 253 ]] || {
+              printf 'ERROR: restart resource name is too long.\n' >&2
+              exit 1
+            }
+          done
+
+      # Do not let missing/blank secrets fall back to runner credentials.
+      - name: Validate AWS credentials
+        id: aws_credentials
+        if: ${{ fromJSON(inputs.platform) == 'aws' }}
+        env:
+          BASH_ENV: ''
+          ACCESS_KEY_JSON: ${{ toJSON(steps.load_secrets.outputs.AWS_ACCESS_KEY_ID) }}
+          SECRET_KEY_JSON: ${{ toJSON(steps.load_secrets.outputs.AWS_SECRET_ACCESS_KEY) }}
+        run: |
+          # @pipe env ACCESS_KEY_JSON: string | null
+          # @pipe env SECRET_KEY_JSON: string | null
+          set -euo pipefail
+          access_key="$(jq -er 'select(type == "string" and test("[!-~]") and index("\n") == null and index("\r") == null and index("\u0000") == null)' <<< "$ACCESS_KEY_JSON")"
+          secret_key="$(jq -er 'select(type == "string" and test("[!-~]") and index("\n") == null and index("\r") == null and index("\u0000") == null)' <<< "$SECRET_KEY_JSON")"
+          printf 'ACCESS_KEY_ID=%s\n' "$access_key" >> "$GITHUB_OUTPUT"
+          printf 'SECRET_ACCESS_KEY=%s\n' "$secret_key" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: ${{ fromJSON(inputs.platform) == 'aws' }}
+        env:
+          AWS_PROFILE: ''
+          ROLE_TO_ASSUME: ''
+          HTTP_PROXY: ''
+          HTTPS_PROXY: ''
+        with:
+          aws-access-key-id: ${{ steps.aws_credentials.outputs.ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ steps.aws_credentials.outputs.SECRET_ACCESS_KEY }}
+          aws-region: us-west-2
+          role-chaining: false
+          use-existing-credentials: false
+          output-credentials: false
+          output-env-credentials: true
+          unset-current-credentials: true
+          mask-aws-account-id: true
+      - name: Set kube config for AWS EKS
+        if: ${{ fromJSON(inputs.platform) == 'aws' }}
+        env:
+          BASH_ENV: ''
+          AWS_PROFILE: ''
+        run: |
+          set -euo pipefail
+          cluster_name="$(aws eks list-clusters --region us-west-2 --output json --no-cli-pager --no-cli-auto-prompt --query clusters | jq -er '
+            [(. // [])[] | select(contains("platform-manager-stack-riA1G"))] |
+            if length == 1 then .[0] else error("expected exactly one EKS cluster") end
+          ')"
+          aws eks --region us-west-2 update-kubeconfig --name "$cluster_name" --no-cli-auto-prompt
+
+      - name: Download and verify Huawei cloud cli
+        if: ${{ fromJSON(inputs.platform) == 'huaweicloud' }}
+        env:
+          BASH_ENV: ''
+          HUAWEI_CLOUD_CLI_VERSION: ${{ steps.tool_versions.outputs.HUAWEI_CLOUD_CLI_VERSION }}
+          HUAWEI_CLOUD_CLI_URL: ${{ steps.tool_versions.outputs.HUAWEI_CLOUD_CLI_URL }}
+          HUAWEI_CLOUD_CLI_SHA256: ${{ steps.tool_versions.outputs.HUAWEI_CLOUD_CLI_SHA256 }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/huaweicloud-cli-${HUAWEI_CLOUD_CLI_VERSION}-linux-amd64.tar.gz"
+          archive="$(jq -ner --arg path "$archive" '$path | select(index("\n") == null and index("\r") == null and index("\u0000") == null)')"
+          curl --disable --globoff --proto '=https' --proto-redir '=https' \
+            --fail --silent --show-error --location --retry 3 \
+            --url "$HUAWEI_CLOUD_CLI_URL" \
+            --output "$archive"
+          printf '%s  %s\n' "$HUAWEI_CLOUD_CLI_SHA256" "$archive" | sha256sum --check -
+
+      - name: Install Huawei cloud cli
+        if: ${{ fromJSON(inputs.platform) == 'huaweicloud' }}
+        env:
+          BASH_ENV: ''
+          HUAWEI_CLOUD_CLI_VERSION: ${{ steps.tool_versions.outputs.HUAWEI_CLOUD_CLI_VERSION }}
+          HW_ACCESS_KEY: ${{ steps.load_secrets.outputs.HW_ACCESS_KEY }}
+          HW_SECRET_KEY: ${{ steps.load_secrets.outputs.HW_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/huaweicloud-cli-${HUAWEI_CLOUD_CLI_VERSION}-linux-amd64.tar.gz"
+          install_dir="$(mktemp -d -- "${RUNNER_TEMP}/huaweicloud-cli.XXXXXX")"
+          trap 'rm -rf -- "$install_dir"' EXIT
+          export TAR_OPTIONS=''
+          tar --extract --gzip --file "$archive" --directory "$install_dir" \
+            --no-same-owner --no-same-permissions
+          sudo -n -- install -m 0755 -- "$install_dir/hcloud" /usr/local/bin/hcloud
+          hcloud configure set \
+            --cli-access-key="$HW_ACCESS_KEY" \
+            --cli-secret-key="$HW_SECRET_KEY" \
+            --cli-region=cn-east-3 \
+            --cli-project-id=0b4cbe72850010ca2f42c01af1353d72 \
+            --cli-warning=false \
+            --cli-agree-privacy-statement=true
+          hcloud version
+
+      # The hcloud CLI can fail to fetch kubeconfig, so retry this step.
+      - name: Set kube config for Huawei Cloud CCE
+        if: ${{ fromJSON(inputs.platform) == 'huaweicloud' }}
+        uses: nick-fields/retry@v3
+        env:
+          BASH_ENV: ''
+        with:
+          max_attempts: 3
+          timeout_minutes: 5
+          shell: bash
+          command: |
+            set -euo pipefail
+            mkdir -p -- "$HOME/.kube"
+            hcloud configure set --cli-warning=false --cli-agree-privacy-statement=true
+            clusters=$(hcloud cce ListClusters/v3 \
+              --cli-region=cn-east-3 \
+              --project_id=0b4cbe72850010ca2f42c01af1353d72 \
+              --cli-output=json \
+              --cli-query='{items: items[*].{uid: metadata.uid}}')
+            cluster_id=$(printf '%s\n' "$clusters" | jq -er '
+              (.items // []) as $items |
+              if ($items | type) == "array" and ($items | length) == 1 then
+                $items[0].uid | select(type == "string" and length > 0)
+              else error("expected exactly one CCE cluster") end
+            ')
+            config_file="$(mktemp -- "$HOME/.kube/config.XXXXXX")"
+            trap 'rm -f -- "$config_file"' EXIT
+            hcloud cce CreateKubernetesClusterCert/v3 \
+              --cli-region=cn-east-3 \
+              --project_id=0b4cbe72850010ca2f42c01af1353d72 \
+              --cli-output=json \
+              --cluster_id="$cluster_id" \
+              --duration=1825 > "$config_file"
+            test -s "$config_file"
+            mv -f -- "$config_file" "$HOME/.kube/config"
+
+      - name: Rollout resources
+        env:
+          BASH_ENV: ''
+          RESTART_NAMESPACE_JSON: ${{ inputs.namespace }}
+          RESTART_NAME_JSON: ${{ inputs.name }}
+          RESTART_KIND_JSON: ${{ inputs.kind }}
+        run: |
+          # @pipe env RESTART_NAMESPACE_JSON: string
+          # @pipe env RESTART_NAME_JSON: string
+          # @pipe env RESTART_KIND_JSON: string
+          set -euo pipefail
+          restart_namespace="$(jq -er 'select(type == "string" and index("\u0000") == null)' <<< "$RESTART_NAMESPACE_JSON")"
+          restart_name="$(jq -er 'select(type == "string" and index("\u0000") == null)' <<< "$RESTART_NAME_JSON")"
+          restart_kind="$(jq -er 'select(type == "string" and index("\u0000") == null)' <<< "$RESTART_KIND_JSON")"
+          read -r -a restart_names <<< "$restart_name"
+          for restart_target in "${restart_names[@]}"; do
+            kubectl rollout restart "$restart_kind/$restart_target" --namespace "$restart_namespace"
+          done
+          for restart_target in "${restart_names[@]}"; do
+            kubectl rollout status "$restart_kind/$restart_target" --namespace "$restart_namespace" --timeout=300s
+          done
