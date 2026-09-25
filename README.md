@@ -4,7 +4,7 @@
 
 目标不是检查任意 Bash，而是减少约定脚本开发中的猜测与手工核对。首版先交付 Bash + GitHub Actions 的 CLI 静态检查，以 `tests/cases/1` 为覆盖目标；暂不实现 LSP 适配。字段补全、类型提示、跳转、引用、重命名和即时诊断属于后续编辑器能力，复用同一分析核心。
 
-当前已初始化工程结构、开发工具链及 UTF-16 Span 基础模型，尚未实现分析器、CLI 或 LSP；下文产品能力均为待实现约定。
+当前已初始化工程结构、开发工具链，并有 UTF-16 Span、Bash/jq/YAML 解析与源码映射的 P0 原型和 case 1 场景矩阵；尚未实现分析器、CLI 或 LSP。原型测试不是产品验收；下文产品能力均为待实现约定。
 
 ## 本地开发
 
@@ -22,14 +22,14 @@ pnpm build
 
 ```text
 packages/
-  core/       纯内存分析核心；目前仅有 Span 模型与单元测试
-  hosts/      脚本/CI 提取与位置映射（待实现）
+  core/       纯内存分析核心；已有 Span 与 Bash/jq 解析原型，语义分析待实现
+  hosts/      YAML/Bash/jq 源码映射原型；完整脚本/CI 提取待实现
   workspace/  项目探查、只读快照与依赖管理（待实现）
   cli/        命令行适配器（待实现）
   lsp/        语言服务适配器（后续阶段，首版不实现）
 ```
 
-依赖方向为 `hosts → core`、`workspace → core/hosts`、`cli/lsp → workspace`。所有包暂为 private，不提供可执行命令或发布包。尚未引入 parser/WASM 资产；其版本、校验值、许可证与离线加载验证将在解析器接入时补齐。集成测试、安装包测试及 VS Code 客户端也尚未实现。
+依赖方向为 `hosts → core`、`workspace → core/hosts`、`cli/lsp → workspace`。所有包暂为 private，不提供可执行命令或发布包。解析/WASM 验证资产的版本、校验值、许可证和现阶段限制见[解析原型验证记录](docs/parser-prototype.md)；正式离线安装包、集成测试及 VS Code 客户端尚未实现。
 
 ## 核心约定
 
@@ -65,3 +65,4 @@ LSP 能力按可靠性逐步增加，不限于 diagnostics/hover；具体阶段�
 - [总体设计](docs/design.md)：架构、契约接入、LSP 能力、CI 与安全边界。
 - [类型与分析语义](docs/type-system.md)：模板语法、JSON 边界、jq 与 Bash 数据流。
 - [实施与验证计划](docs/implementation-plan.md)：交付顺序、测试和验收。
+- [解析原型验证记录](docs/parser-prototype.md)：Bash/jq/YAML 路线、源码映射、case 1 场景矩阵及待验证边界。

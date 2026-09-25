@@ -1,2 +1,7 @@
-// Host extraction and source mapping will be implemented here.
-export {};
+export {
+  type MappedRange,
+  MappedText,
+  type MappingPrecision,
+  mapBashSingleQuoted,
+  mapYamlScalar,
+} from "./source-map.js";

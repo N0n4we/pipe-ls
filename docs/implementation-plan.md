@@ -1,8 +1,8 @@
 # 实施与验证计划
 
-当前已建立 pnpm workspace、TypeScript strict、Vitest、lint 与构建入口，并提供 UTF-16 Span 基础模型及单元测试；尚无分析器、可执行命令或产品测试，P0 尚未完成。按纵向可用功能交付，不以空目录/接口数量代替完成，不在原型验证前承诺工期。
+当前已建立 pnpm workspace、TypeScript strict、Vitest、lint 与构建入口，并提供 UTF-16 Span、解析/源码映射原型及 case 1 场景矩阵；尚无分析器、可执行命令或产品诊断测试，P0 尚未完成。解析路线的实测结果与剩余缺口见[验证记录](parser-prototype.md)。按纵向可用功能交付，不以空目录/接口数量代替完成。
 
-本轮仅修订 case 与规范，以下分析能力均待后续实现。首版范围为 CLI + Bash/GitHub Actions，覆盖 [case 1](../tests/cases/1/README.md) 的语法和数据流；仅以 `.github` 目录判定项目根，不读取项目级分析配置，暂不实现 LSP 适配。
+本轮新增的是解析/映射原型和矩阵，以下分析能力仍待后续实现。首版范围为 CLI + Bash/GitHub Actions，覆盖 [case 1](../tests/cases/1/README.md) 的语法和数据流；仅以 `.github` 目录判定项目根，不读取项目级分析配置，暂不实现 LSP 适配。
 
 ## 1. 交付顺序
 
@@ -13,7 +13,7 @@
 - Bash/jq parser 与 UTF-16 Span、可组合 SourceMap；验证中文/emoji/CRLF、错误恢复、树释放及 YAML folded/转义映射原型。
 - 以 `tests/cases/1/.github` 下的真实脚本与 GitHub Actions fixture 固定首版覆盖矩阵，记录输入/输出、预期诊断、依赖缺口及语法清单；GitLab 和 LSP fixture 后续加入。
 
-验收：解析不崩溃、范围准确；明确区分非法声明/语法与暂不支持。选定 jq parser 路线；差分基准锁定 jq 1.7.1，其他版本单列兼容测试。core import 不触达 LSP、文件系统、网络或 child_process。
+验收：解析不崩溃、范围准确；明确区分非法声明/语法与暂不支持。选定 jq parser 路线；差分基准锁定本机 jq 1.8.2，其他版本单列兼容测试。core import 不触达 LSP、文件系统、网络或 child_process。
 
 ### P1：独立脚本最小闭环，同时建立 workspace
 
@@ -65,7 +65,7 @@
 
 ## 3. jq 语义基准
 
-开发测试只运行固定、受控 fixture，不执行用户脚本。jq 1.7.1 为基准，执行设超时；对结果流使用多值解码，不假定一行一个 JSON；`-r` 单独断言原始字节。
+开发测试只运行固定、受控 fixture，不执行用户脚本。以 `jq --version` 输出 `jq-1.8.2` 的本机版本为基准，执行设超时；对结果流使用多值解码，不假定一行一个 JSON；`-r` 单独断言原始字节。
 
 | 命令/输入 | 期望 |
 | --- | --- |
@@ -84,7 +84,7 @@
 
 ## 4. 完成标准
 
-已有工程验证入口：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`。其中测试目前只覆盖基础模型，不代表产品能力通过验收。待实现：`pnpm test:integration`、`pnpm test:package`。
+已有工程验证入口：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`。其中测试目前覆盖基础模型及解析/映射原型，不代表产品诊断能力通过验收。待实现：`pnpm test:integration`、`pnpm test:package`。
 
 安装包在独立临时目录离线加载 WASM、执行 check，携带版本与许可清单，不依赖开发仓库绝对路径；LSP 启停验证留到适配器实现后。初始性能目标为 100KB 文档暖分析 p95 < 200ms、100 个典型 unit 冷 CLI < 5s；记录机器/版本/fixture hash 和峰值内存，未实测前不作为宣传结论。
 

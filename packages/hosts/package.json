@@ -16,6 +16,7 @@
     "build": "tsc --project tsconfig.json"
   },
   "dependencies": {
-    "@pipe-ls/core": "workspace:*"
+    "@pipe-ls/core": "workspace:*",
+    "yaml": "2.9.1"
   }
 }
