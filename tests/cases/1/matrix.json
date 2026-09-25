@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "purpose": "P0 scenario inputs and future analyzer oracles; diagnostic expectations are not yet executable product tests",
+  "purpose": "First-version CLI diagnostic oracles and controlled parse/update runtime inputs; synthetic dependencies do not make the original fixture complete",
   "cases": [
     {
       "id": "tag-aws",
@@ -238,7 +238,12 @@
       "id": "missing-reusable-workflow",
       "kind": "blocked",
       "entry": ".github/workflows/cloud.yaml",
-      "missingDependency": ".github/workflows/do-rollout-restart.yaml",
+      "mutation": {
+        "target": ".github/workflows/cloud.yaml",
+        "search": "uses: ./.github/workflows/do-rollout-restart.yaml\n    with:\n      platform: ${{ toJSON('aws') }}",
+        "replace": "uses: ./.github/workflows/missing-rollout-restart.yaml\n    with:\n      platform: ${{ toJSON('aws') }}"
+      },
+      "missingDependency": ".github/workflows/missing-rollout-restart.yaml",
       "expectedCodes": ["PIPE204"],
       "expectedFacts": [
         "do not infer called workflow input/output contract from caller"

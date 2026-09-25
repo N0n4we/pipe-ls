@@ -4,32 +4,47 @@
 
 目标不是检查任意 Bash，而是减少约定脚本开发中的猜测与手工核对。首版先交付 Bash + GitHub Actions 的 CLI 静态检查，以 `tests/cases/1` 为覆盖目标；暂不实现 LSP 适配。字段补全、类型提示、跳转、引用、重命名和即时诊断属于后续编辑器能力，复用同一分析核心。
 
-当前已初始化工程结构、开发工具链，并有 UTF-16 Span、Bash/jq/YAML 解析与源码映射的 P0 原型和 case 1 场景矩阵；尚未实现分析器、CLI 或 LSP。原型测试不是产品验收；下文产品能力均为待实现约定。
+当前已有 UTF-16 Span、Bash/jq/YAML 解析与源码映射、JSON 契约、保守的脚本与 GitHub Actions 静态分析、`.github` 根发现和只读 CLI。case 1 的 23 个矩阵场景现有可执行诊断或受控运行时测试；合成 overlays 与带 JSON 解码的本地 reusable workflow stub 下，`cloud.yaml` 可静态检查通过。**首版仍未完成验收**：原 fixture 缺少 `resources/**` overlays；真实 `do-rollout-restart.yaml` 已收录，但其工具/动作/runner 等上下文尚不能完整静态验证，且华为路径依赖的 `.github/tool-versions.env` 尚未收录。git/gh 目前只摘要固定命令族及少量参数关系，未证明动态路径、远端参数或实际副作用。CLI 已以 `@pipe-ls/cli@0.1.0` 在 npm 公开发布，空缓存离线安装和无凭据注册表安装均通过；项目采用 [MIT 许可证](LICENSE)。更广泛的性能验收仍待完成。LSP 不属于首版范围。
+
+## 公开安装
+
+```sh
+pnpm add -g @pipe-ls/cli@0.1.0
+pipe-ls --version
+pipe-ls check --json .
+```
+
+在含 `.github/` 的项目目录运行检查。CLI 只读检查本地项目；`complete: false` 表示检查受阻或发现诊断，不应当作通过。
 
 ## 本地开发
 
-使用 Node.js 22.13+（推荐 `.node-version` 锁定版本）与 pnpm 11.20.0。
+使用 Node.js 22.13+（推荐 `.node-version` 锁定版本）与 pnpm 11.20.0。`test:integration` 另外需要本机 Bash、jq 1.8.2（或兼容版本）和 mikefarah/yq v4；测试不会下载工具。
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm test:integration
 pnpm build
+pnpm test:package
+pnpm pack:offline
 ```
+
+构建后可运行 `node packages/cli/dist/bin.js check [--json] [paths...]`，或用 `--version` 查看 CLI 版本。它支持有限的 Bash 赋值、export、管道、命令替换、条件分支、read/for/JSON-lines while、本地多层脚本契约调用及静态 jq/printf 检查，并验证有限本地路径、部分 yq may-write 效果与缺失依赖；GitHub run 的 env 注入、已验证的 `GITHUB_ENV/GITHUB_OUTPUT` 写入、显式 job output 映射、有限 `needs`/`if`/本地 reusable workflow 输入及源码位置已有检查。范围外语法和无法证明的条件仍阻断，不会因解析成功而宣称通过。`externalEffects` 只列可能运行的命令族，不是动态参数或远程效果的证明。该命令只读项目文件，不执行脚本或业务命令。
 
 `pnpm test:watch` 启动测试监听，`pnpm format` 格式化代码与配置。构建产物位于各包的 `dist/`，不纳入版本控制；删除产物后可直接重新构建，类型检查和单元测试不依赖预先构建。
 
 ```text
 packages/
-  core/       纯内存分析核心；已有 Span 与 Bash/jq 解析原型，语义分析待实现
-  hosts/      YAML/Bash/jq 源码映射原型；完整脚本/CI 提取待实现
-  workspace/  项目探查、只读快照与依赖管理（待实现）
-  cli/        命令行适配器（待实现）
+  core/       纯内存分析核心；已有 Span、解析、模板与保守语义切片
+  hosts/      YAML/Bash/jq 源码映射及 GitHub run 提取原型
+  workspace/  .github 项目探查、单次检查的按文件快照与依赖边；完整失效管理待实现
+  cli/        只读 check 命令；0.1.0 已公开发布，完整首版验收仍待完成
   lsp/        语言服务适配器（后续阶段，首版不实现）
 ```
 
-依赖方向为 `hosts → core`、`workspace → core/hosts`、`cli/lsp → workspace`。所有包暂为 private，不提供可执行命令或发布包。解析/WASM 验证资产的版本、校验值、许可证和现阶段限制见[解析原型验证记录](docs/parser-prototype.md)；正式离线安装包、集成测试及 VS Code 客户端尚未实现。
+依赖方向为 `hosts → core`、`workspace → core/hosts`、`cli → core/hosts/workspace`、`lsp → workspace`。四个 `@pipe-ls/*` 运行时包已以 `0.1.0` 公开发布；根 workspace 和未实现的 LSP 保持 private。`pnpm test:integration` 仅在临时副本中运行 case 1 的五个矩阵输入及 support-portal 回归，不运行 workflow、git/gh 或部署命令。`pnpm test:package` 将四个运行时包及三项固定版本依赖打成 tarball，在**全新空 pnpm store** 的临时目录离线安装，并验证 CLI/WASM 不回链源码仓库、MIT `LICENSE` 和[第三方许可证清单](packages/cli/THIRD_PARTY_NOTICES.md)进入相应包。`pnpm pack:offline` 将同一套 tarball、校验值和安装说明写入 `release/offline-0.1.0/`（已有目录不覆盖；可传入其他输出路径）；这是本地分发物，与 npm 发布包分开。解析/WASM 验证资产的版本、校验值和限制见[解析原型验证记录](docs/parser-prototype.md)；VS Code 客户端尚未实现。
 
 ## 核心约定
 

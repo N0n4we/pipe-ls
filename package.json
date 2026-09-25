@@ -1,6 +1,7 @@
 {
   "name": "pipe-ls-workspace",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.20.0",
   "engines": {
@@ -11,6 +12,9 @@
     "format": "biome format --write .",
     "typecheck": "tsc --project tsconfig.check.json",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:package": "pnpm build && node scripts/test-package.mjs",
+    "pack:offline": "pnpm build && node scripts/pack-offline.mjs",
     "test:watch": "vitest",
     "build": "pnpm --recursive run build"
   },

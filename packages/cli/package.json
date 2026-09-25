@@ -1,7 +1,14 @@
 {
   "name": "@pipe-ls/cli",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Read-only static checker for contract-based Bash and GitHub Actions",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -9,13 +16,21 @@
       "import": "./dist/index.js"
     }
   },
+  "bin": {
+    "pipe-ls": "./dist/bin.js"
+  },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc --project tsconfig.json"
   },
   "dependencies": {
-    "@pipe-ls/workspace": "workspace:*"
+    "@pipe-ls/core": "workspace:*",
+    "@pipe-ls/hosts": "workspace:*",
+    "@pipe-ls/workspace": "workspace:*",
+    "@vscode/tree-sitter-wasm": "0.3.1"
   }
 }

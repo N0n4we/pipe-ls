@@ -26,15 +26,27 @@ importers:
 
   packages/cli:
     dependencies:
+      '@pipe-ls/core':
+        specifier: workspace:*
+        version: link:../core
+      '@pipe-ls/hosts':
+        specifier: workspace:*
+        version: link:../hosts
       '@pipe-ls/workspace':
         specifier: workspace:*
         version: link:../workspace
+      '@vscode/tree-sitter-wasm':
+        specifier: 0.3.1
+        version: 0.3.1
 
   packages/core:
     dependencies:
       web-tree-sitter:
         specifier: 0.27.0
         version: 0.27.0
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
 
   packages/hosts:
     dependencies:

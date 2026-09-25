@@ -1,6 +1,6 @@
 # P0 解析与源码映射验证记录
 
-本记录验证技术路线，不表示 case 1 已通过静态分析。当前测试执行解析、位置映射和矩阵完整性检查；`PIPE` 诊断、Bash/jq 数据流、外部命令效果及 CI 契约仍待分析器实现。参见 [case 1 矩阵](../tests/cases/1/matrix.json)。
+本记录保存 P0 技术路线的原型结论，表内“尚未证明”指 P0 当时的状态，不代表当前产品进度。当前已有 CLI 诊断与受控集成测试，但原 case 1 缺失业务依赖、首版尚未验收；进度以[实施计划](implementation-plan.md)和[case 1 矩阵](../tests/cases/1/matrix.json)为准。
 
 ## 路线与固定资产
 
@@ -20,8 +20,8 @@ Bash grammar 测试资产 SHA-256：`a14e9ed880b2c3f16cd00c796c38d237a3e9b028bde
 
 ## case 1 矩阵与执行边界
 
-`matrix.json` 包含 **5 正例、13 反例、5 受阻例**，给出具体输入、正例所需合成依赖、可物化的源文件变更/片段、预期事实及未来诊断码。测试目前断言：引用确实来自 allowlist 且唯一、JSON 特殊字符往返、变更锚点唯一、变更后仍可被 Bash/YAML/jq 解析、缺失依赖确实缺失；**不**断言分析器已经产生预期 `PIPE` 诊断。待 P1/P2 实现后，应把这些 oracle 接入 CLI fixture runner 并检查原文件诊断位置和退出码。
+`matrix.json` 包含 **5 正例、13 反例、5 受阻例**。P0 时只检查解析和锚点；现在 23 个场景均有 CLI 诊断或受控运行时 oracle。合成依赖下的静态通过不等于原 fixture 可通过，原文件诊断位置、动态副作用和完整发布验收仍需继续核查。
 
-当前 `resources/**` 与 `.github/workflows/do-rollout-restart.yaml` 故意缺失，完整检查须报告 `PIPE204`，不能因解析成功声称 case 1 通过。OMP allowlist 的重复 repository 是单独的数据质量问题，矩阵正例选择唯一行，不把它误报为 JSON 接口错误。不得直接执行整个 workflow，也不得在测试中运行 git/gh/云操作。完整运行时回归只能在临时副本与合成 overlays 上做；本轮未运行。
+当前 `resources/**` overlays 仍缺失，完整检查须报告相应 `PIPE204`；真实 `.github/workflows/do-rollout-restart.yaml` 已收录，但尚未静态验收，华为路径所需的 `.github/tool-versions.env` 也缺失。不能因合成正例通过声称原 case 1 通过。OMP allowlist 的重复 repository 是单独的数据质量问题，矩阵正例选择唯一行，不把它误报为 JSON 接口错误。不得直接执行整个 workflow，也不得在测试中运行 git/gh/云操作。五个正例的 parse/update 运行时回归仅在临时副本与合成 overlays 上进行。
 
-复现：`pnpm lint && pnpm typecheck && pnpm test && pnpm build`。本机 jq 1.8.2 已设为语义基准，尚未完成以该版本为基准的差分测试。P0 的 JSON 模板 parser、完整分段映射及离线包装仍是后续工作。
+复现：`pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm test:package`。本机 jq 1.8.2 是语义基准，已有少量参考差分测试；完整差分、分段映射及正式持久发布仍是后续工作。CLI tarball 已携带第三方许可证清单，并通过空 pnpm store 的临时离线安装冒烟。

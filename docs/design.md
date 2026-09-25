@@ -136,7 +136,7 @@ jobs:
 
 ## 6. 检查报告与安全
 
-首版待实现入口：`pipe-ls check [paths...] [--format text|json]`、`pipe-ls --version`。省略 paths 时按 `.github` 标记自动探查项目。`pipe-ls lsp --stdio` 属于后续阶段。
+首版 CLI 入口：`pipe-ls check [--json] [paths...]`、`pipe-ls --version`。省略 paths 时按 `.github` 标记自动探查项目。`pipe-ls lsp --stdio` 属于后续阶段。
 
 | code | 含义 |
 | --- | --- |

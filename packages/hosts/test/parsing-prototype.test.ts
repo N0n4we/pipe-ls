@@ -376,7 +376,7 @@ describe("case 1 scenario matrix", () => {
         const missingDependency = scenario.missingDependency;
         if (missingDependency) {
           expect(() => fixture(missingDependency), scenario.id).toThrow();
-          continue;
+          if (!scenario.mutation) continue;
         }
         const target = scenario.mutation?.target ?? scenario.entry;
         const source = scenario.mutation
