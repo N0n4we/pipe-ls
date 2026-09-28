@@ -60,6 +60,26 @@ describe("JSON interface templates", () => {
     }
   });
 
+  it("does not echo malformed template values into contract diagnostics", () => {
+    const secret = "SECRET_MARKER_MUST_NOT_LEAK";
+    for (const source of [
+      secret,
+      `{"${secret}": number, "${secret}": string}`,
+    ]) {
+      let failure: unknown;
+      try {
+        parseTemplate(source);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(TemplateSyntaxError);
+      expect((failure as TemplateSyntaxError).message).not.toContain(secret);
+      const contract = parseScriptContract(`# @pipe stdin: ${source}\n`);
+      expect(contract.issues).toHaveLength(1);
+      expect(JSON.stringify(contract.issues)).not.toContain(secret);
+    }
+  });
+
   it("rejects oversized or combinatorial interface declarations", () => {
     expect(() => parseTemplate(" ".repeat(MAX_TEMPLATE_LENGTH + 1))).toThrow(
       "Template length budget exceeded",

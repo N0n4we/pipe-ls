@@ -154,6 +154,6 @@ jobs:
 
 CLI 退出码：`0` 至少一个目标完成检查且所有目标通过；`1` 存在类型/契约/语法错误或检查受阻；`2` 无目标、全部排除、参数错误、入口不可读或内部故障；中断 `130`。JSON 报告带 `schemaVersion: 1`、版本、原始 URI/range、稳定 code、完整性、未验证依赖和契约假设；按 URI/offset/code 排序。CLI 行列从 1 开始，JSON/LSP 从 0 开始，列均为 UTF-16。
 
-项目探查和依赖解析的路径经 realpath 限制在工作区边界内；不访问远程 URI、云平台或真实 secrets，不从 `process.env` 填充业务输入，不执行用户 Bash/jq/业务命令。日志不打印源码、payload 或环境值；LSP stdout 仅传协议。
+项目探查和依赖解析的路径经 realpath 限制在工作区边界内；不访问远程 URI、云平台或真实 secrets，不从 `process.env` 填充业务输入，不执行用户 Bash/jq/业务命令。日志不打印源码、payload 或环境值；YAML、模板和 jq 语法错误只报告固定类别与原文件位置，不转发解析器附带的源码片段或原始 token；LSP stdout 仅传协议。
 
 缓存键包含内容、规则/parser 版本、项目探查结果、执行上下文和依赖版本；反向依赖失效，循环调用按 SCC 报告受阻。worker 隔离 parser/tree，定期取消并以终止 worker 兜底。文件数/体积、AST 深度、分支/类型组合和时间均设预算，超限不静默丢目标。依赖安装是显式开发操作，分析时不自动下载资产。

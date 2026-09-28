@@ -98,8 +98,7 @@ class Parser {
         do {
           this.space();
           const key = this.jsonString();
-          if (Object.hasOwn(fields, key))
-            this.fail(`Duplicate key ${JSON.stringify(key)}`);
+          if (Object.hasOwn(fields, key)) this.fail("Duplicate object key");
           this.expect(":");
           fields[key] = this.union();
         } while (this.take(","));
@@ -135,10 +134,7 @@ class Parser {
           kind: "primitive",
           name: word as "string" | "number" | "boolean" | "null",
         };
-      this.fail(
-        `Unsupported template type ${word}`,
-        this.position - word.length,
-      );
+      this.fail("Unsupported template type", this.position - word.length);
     }
     this.fail("Expected JSON template");
   }

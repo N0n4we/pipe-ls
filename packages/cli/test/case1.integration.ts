@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractGithubWorkflow } from "@pipe-ls/hosts";
 import { describe, expect, it } from "vitest";
 
 interface PositiveCase {
@@ -73,13 +74,14 @@ function toolPath(name: string): string {
   throw new Error(`Required local integration tool ${name} is unavailable`);
 }
 
-function run(
+function runCaptured(
   executable: string,
   args: readonly string[],
   root: string,
   bin: string,
   input = "",
-): string {
+  extraEnv: Readonly<Record<string, string>> = {},
+): { readonly stdout: string; readonly stderr: string } {
   const result = spawnSync(executable, [...args], {
     cwd: root,
     env: {
@@ -87,6 +89,7 @@ function run(
       HOME: root,
       TMPDIR: root,
       LC_ALL: "C",
+      ...extraEnv,
     },
     input,
     encoding: "utf8",
@@ -97,10 +100,141 @@ function run(
     throw new Error(
       `Controlled fixture command failed: ${args[0] ?? executable}: ${String(result.error ?? result.stderr).slice(0, 2000)}`,
     );
-  return result.stdout;
+  return { stdout: result.stdout, stderr: result.stderr };
+}
+
+function run(
+  executable: string,
+  args: readonly string[],
+  root: string,
+  bin: string,
+  input = "",
+): string {
+  return runCaptured(executable, args, root, bin, input).stdout;
 }
 
 describe("case 1 controlled integration inputs", () => {
+  it("round-trips special characters through the real distinct-ID run body", () => {
+    const scenario = cases.find((item) => item.id === "special-chars-env");
+    if (!scenario?.input.distinct_id)
+      throw new Error("Missing special-chars-env matrix input");
+    const workflow = extractGithubWorkflow(
+      readFileSync(join(fixture, ".github/workflows/cloud.yaml"), "utf8"),
+    );
+    const unit = workflow.runs.find((run) =>
+      run.script.includes("jq -r '.' <<< \"$DISTINCT_ID\""),
+    );
+    if (!unit) throw new Error("Missing distinct-ID run body");
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-case1-env-run-"));
+    try {
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      for (const name of ["bash", "jq"])
+        symlinkSync(toolPath(name), join(bin, name));
+      const result = runCaptured(
+        `${bin}/bash`,
+        ["-c", unit.script],
+        root,
+        bin,
+        "",
+        {
+          DISTINCT_ID: JSON.stringify(scenario.input.distinct_id),
+        },
+      );
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe(`${scenario.input.distinct_id}\n`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes verified one-line GitHub outputs from the real setup run body", () => {
+    const scenario = cases.find((item) => item.id === "tag-aws");
+    if (!scenario) throw new Error("Missing tag-aws matrix input");
+    const workflow = extractGithubWorkflow(
+      readFileSync(join(fixture, ".github/workflows/cloud.yaml"), "utf8"),
+    );
+    const unit = workflow.runs.find((run) => run.stepId === "setup");
+    if (!unit) throw new Error("Missing setup run body");
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-case1-setup-run-"));
+    try {
+      const bin = join(root, "bin");
+      mkdirSync(bin);
+      for (const name of ["bash", "date", "dirname", "jq", "yq"])
+        symlinkSync(toolPath(name), join(bin, name));
+      for (const relative of [
+        ".github/scripts/parse-cloud-images.sh",
+        ".github/scripts/update-cloud-images.sh",
+        ".github/scripts/cloud-image-allowlist.tsv",
+      ]) {
+        const target = join(root, relative);
+        mkdirSync(dirname(target), { recursive: true });
+        copyFileSync(join(fixture, relative), target);
+      }
+      const overlay = join(root, "resources/cloud/overlays/staging/aws");
+      mkdirSync(overlay, { recursive: true });
+      writeFileSync(
+        join(overlay, "kustomization.yaml"),
+        "namespace: synthetic-aws\nimages:\n  - name: cloud-admin-frontend\n    newName: old.example/repo\n    newTag: old\n",
+      );
+      const githubOutput = join(root, "GITHUB_OUTPUT");
+      const githubEnv = join(root, "GITHUB_ENV");
+      writeFileSync(githubOutput, "");
+      writeFileSync(githubEnv, "");
+      const result = runCaptured(
+        `${bin}/bash`,
+        ["-c", unit.script],
+        root,
+        bin,
+        "",
+        {
+          IMAGES_INPUT: JSON.stringify(scenario.input.images),
+          DEPLOY_ENVIRONMENT: JSON.stringify(scenario.input.environment),
+          GITHUB_OUTPUT: githubOutput,
+          GITHUB_ENV: githubEnv,
+        },
+      );
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+      const outputLines = readFileSync(githubOutput, "utf8")
+        .trimEnd()
+        .split("\n");
+      expect(outputLines).toHaveLength(1);
+      expect(outputLines[0]?.startsWith("restart_targets=")).toBe(true);
+      const restartTargets = JSON.parse(
+        outputLines[0]?.slice("restart_targets=".length) ?? "",
+      ) as UpdateResult["restart_targets"];
+      expect(restartTargets.aws?.namespace).toBe("synthetic-aws");
+      expect(restartTargets.aws?.deployments.length).toBeGreaterThan(0);
+      const envLines = readFileSync(githubEnv, "utf8").trimEnd().split("\n");
+      expect(envLines).toHaveLength(3);
+      const values = Object.fromEntries(
+        envLines.map((line) => {
+          const separator = line.indexOf("=");
+          expect(separator).toBeGreaterThan(0);
+          return [
+            line.slice(0, separator),
+            JSON.parse(line.slice(separator + 1)) as string,
+          ];
+        }),
+      );
+      expect(Object.keys(values).sort()).toEqual([
+        "CLOUD_UPDATE_MESSAGE",
+        "KUSTOMIZATION_FILE_PATH",
+        "NEW_BRANCH_NAME",
+      ]);
+      expect(values.KUSTOMIZATION_FILE_PATH).toBe(
+        "resources/cloud/overlays/staging",
+      );
+      expect(values.CLOUD_UPDATE_MESSAGE).toBe("chore: bump cloud in staging");
+      expect(values.NEW_BRANCH_NAME).toMatch(
+        /^bump-cloud-in-staging-\d{8}-\d{6}$/u,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   for (const scenario of cases) {
     it(scenario.id, () => {
       const root = mkdtempSync(join(tmpdir(), "pipe-ls-case1-runtime-"));

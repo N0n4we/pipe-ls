@@ -1,5 +1,12 @@
 import { createSpan, type Span, type Template } from "@pipe-ls/core";
-import { isMap, isScalar, isSeq, parseDocument, type YAMLMap } from "yaml";
+import {
+  isAlias,
+  isMap,
+  isScalar,
+  isSeq,
+  parseDocument,
+  type YAMLMap,
+} from "yaml";
 import { type MappedText, mapYamlScalar } from "./source-map.js";
 
 export interface WorkflowIssue {
@@ -17,8 +24,15 @@ export interface RunUnit {
   readonly env: Readonly<Record<string, EnvBinding>>;
   readonly jobId?: string;
   readonly stepId?: string;
+  readonly stepIndex: number;
   readonly conditional: boolean;
   readonly condition?: EnvBinding;
+}
+/** Bash text supplied to an opaque action; its execution/effects are not trusted. */
+export interface OpaqueCommand {
+  readonly script: string;
+  readonly map: MappedText;
+  readonly span: Span;
 }
 export interface EnvBinding {
   readonly text: string;
@@ -30,6 +44,8 @@ export interface LocalDependency {
   readonly span: Span;
   readonly jobId?: string;
   readonly with: Readonly<Record<string, EnvBinding>> | undefined;
+  /** Only the names are retained; secret values must never enter reports. */
+  readonly secrets: "inherit" | "unverified" | readonly string[] | undefined;
   readonly condition?: EnvBinding;
 }
 export interface JobOutputReference {
@@ -46,6 +62,12 @@ export interface JobOutputMapping {
 }
 export interface GithubWorkflow {
   readonly runs: readonly RunUnit[];
+  /** Step positions whose effects on later job env cannot be trusted. */
+  readonly unverifiedSteps: readonly {
+    readonly jobId: string;
+    readonly stepIndex: number;
+  }[];
+  readonly opaqueCommands: readonly OpaqueCommand[];
   readonly dependencies: readonly LocalDependency[];
   readonly issues: readonly WorkflowIssue[];
   readonly inputs: Readonly<Record<string, Template>>;
@@ -69,6 +91,53 @@ export interface GithubWorkflow {
         >
       >
     | undefined;
+  /** Undefined means declarations could not be verified. */
+  readonly workflowCallSecrets: Readonly<Record<string, boolean>> | undefined;
+}
+
+export const MAX_WORKFLOW_YAML_NODES = 10_000;
+export const MAX_WORKFLOW_YAML_DEPTH = 128;
+export const MAX_WORKFLOW_YAML_ALIASES = 128;
+
+function yamlBudgetIssue(
+  root: unknown,
+  sourceLength: number,
+): WorkflowIssue | undefined {
+  const pending: Array<{ readonly node: unknown; readonly depth: number }> = [
+    { node: root, depth: 0 },
+  ];
+  let nodes = 0;
+  let aliases = 0;
+  const issue = (message: string): WorkflowIssue => ({
+    code: "PIPE203",
+    message,
+    span: createSpan(0, sourceLength),
+  });
+  while (pending.length) {
+    const { node, depth } = pending.pop() as {
+      readonly node: unknown;
+      readonly depth: number;
+    };
+    if (node === null || node === undefined) continue;
+    if (++nodes > MAX_WORKFLOW_YAML_NODES)
+      return issue("Workflow YAML node budget exceeded");
+    if (depth > MAX_WORKFLOW_YAML_DEPTH)
+      return issue("Workflow YAML depth budget exceeded");
+    if (isAlias(node)) {
+      if (++aliases > MAX_WORKFLOW_YAML_ALIASES)
+        return issue("Workflow YAML alias budget exceeded");
+      continue;
+    }
+    if (isMap(node)) {
+      for (const pair of node.items) {
+        pending.push({ node: pair.key, depth: depth + 1 });
+        pending.push({ node: pair.value, depth: depth + 1 });
+      }
+    } else if (isSeq(node))
+      for (const item of node.items)
+        pending.push({ node: item, depth: depth + 1 });
+  }
+  return undefined;
 }
 
 function checkNeedsOutputs(
@@ -215,6 +284,66 @@ function workflowCallOutputs(
     names.push(pair.key.value);
   }
   return names;
+}
+
+function workflowCallSecrets(
+  workflow: YAMLMap<unknown, unknown>,
+): GithubWorkflow["workflowCallSecrets"] {
+  const on = workflow.get("on", true);
+  if (!isMap(on)) return {};
+  const call = on.get("workflow_call", true);
+  if (call === undefined || (isScalar(call) && call.value === null)) return {};
+  if (!isMap(call)) return undefined;
+  const secrets = call.get("secrets", true);
+  if (secrets === undefined) return {};
+  if (!isMap(secrets)) return undefined;
+  const result: Record<string, boolean> = Object.create(null);
+  for (const pair of secrets.items) {
+    if (
+      !isScalar(pair.key) ||
+      typeof pair.key.value !== "string" ||
+      !isMap(pair.value)
+    )
+      return undefined;
+    const required = pair.value.get("required", true);
+    if (
+      required !== undefined &&
+      (!isScalar(required) || typeof required.value !== "boolean")
+    )
+      return undefined;
+    result[pair.key.value] = isScalar(required) && required.value === true;
+  }
+  return result;
+}
+
+function callerSecrets(
+  job: YAMLMap<unknown, unknown>,
+  issues: WorkflowIssue[],
+): LocalDependency["secrets"] {
+  const node = job.get("secrets", true);
+  if (node === undefined) return undefined;
+  if (isScalar(node) && node.value === "inherit") return "inherit";
+  if (isMap(node)) {
+    const names: string[] = [];
+    for (const pair of node.items) {
+      if (
+        !isScalar(pair.key) ||
+        typeof pair.key.value !== "string" ||
+        !isScalar(pair.value) ||
+        typeof pair.value.value !== "string" ||
+        !/^\$\{\{\s*secrets\.[A-Za-z_][A-Za-z_0-9-]*\s*\}\}$/u.test(
+          pair.value.value,
+        )
+      ) {
+        unsupported(job, "secrets", issues);
+        return "unverified";
+      }
+      names.push(pair.key.value);
+    }
+    return names;
+  }
+  unsupported(job, "secrets", issues);
+  return "unverified";
 }
 
 function envAt(
@@ -400,6 +529,8 @@ function modeledCheckout(step: YAMLMap<unknown, unknown>): boolean {
 /** Extract run units with original YAML locations, without evaluating expressions. */
 export function extractGithubWorkflow(source: string): GithubWorkflow {
   const runs: RunUnit[] = [];
+  const unverifiedSteps: Array<{ jobId: string; stepIndex: number }> = [];
+  const opaqueCommands: OpaqueCommand[] = [];
   const dependencies: LocalDependency[] = [];
   const issues: WorkflowIssue[] = [];
   const outputReferences: JobOutputReference[] = [];
@@ -412,8 +543,11 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
     callableOutputs: readonly string[] | undefined,
     callable = false,
     callInputs?: GithubWorkflow["workflowCallInputs"],
+    callSecrets?: GithubWorkflow["workflowCallSecrets"],
   ): GithubWorkflow => ({
     runs,
+    unverifiedSteps,
+    opaqueCommands,
     dependencies,
     issues,
     inputs,
@@ -425,20 +559,42 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
     workflowCallOutputs: callableOutputs,
     workflowCallable: callable,
     workflowCallInputs: callInputs,
+    workflowCallSecrets: callSecrets,
   });
-  const document = parseDocument(source, {
-    keepSourceTokens: true,
-    uniqueKeys: true,
-  });
+  let document: ReturnType<typeof parseDocument>;
+  try {
+    document = parseDocument(source, {
+      keepSourceTokens: true,
+      uniqueKeys: true,
+    });
+  } catch {
+    issues.push({
+      code: "PIPE203",
+      message: "Workflow YAML parser failed within analysis budget",
+      span: createSpan(0, source.length),
+    });
+    return finish({}, undefined);
+  }
   for (const error of document.errors) {
     const pos = error.pos;
+    const start = Math.max(0, Math.min(pos[0], source.length));
+    const end = Math.max(start, Math.min(pos[1], source.length));
+    const safeCode = /^[A-Z][A-Z_0-9]{0,63}$/u.test(error.code)
+      ? error.code
+      : "YAML_PARSE_ERROR";
     issues.push({
       code: "PIPE001",
-      message: error.message,
-      span: createSpan(pos[0], pos[1]),
+      // yaml's error.message embeds source lines, which may contain secrets.
+      message: `Workflow YAML syntax error (${safeCode})`,
+      span: createSpan(start, end),
     });
   }
   if (issues.length) return finish({}, undefined);
+  const budgetIssue = yamlBudgetIssue(document.contents, source.length);
+  if (budgetIssue) {
+    issues.push(budgetIssue);
+    return finish({}, undefined);
+  }
   const workflow = document.contents;
   if (!isMap(workflow)) {
     issues.push({
@@ -466,6 +622,17 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
       code: "PIPE203",
       message:
         "Reusable workflow input declarations are not statically available",
+      span: createSpan(
+        isMap(on) ? (on.range?.[0] ?? 0) : 0,
+        isMap(on) ? (on.range?.[1] ?? 0) : 0,
+      ),
+    });
+  const callSecrets = workflowCallSecrets(workflow);
+  if (callable && callSecrets === undefined)
+    issues.push({
+      code: "PIPE203",
+      message:
+        "Reusable workflow secret declarations are not statically available",
       span: createSpan(
         isMap(on) ? (on.range?.[0] ?? 0) : 0,
         isMap(on) ? (on.range?.[1] ?? 0) : 0,
@@ -609,6 +776,7 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
         path: uses.value,
         span: createSpan(uses.range?.[0] ?? 0, uses.range?.[1] ?? 0),
         with: withValues,
+        secrets: callerSecrets(job, issues),
         ...(jobIf ? { condition: jobIf } : {}),
         ...(isScalar(pair.key) && typeof pair.key.value === "string"
           ? { jobId: pair.key.value }
@@ -630,8 +798,13 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
       workflowRootCwd && !hasUnverifiedDefaultWorkingDirectory(job);
     const stepIds = new Set<string>();
     let repositoryAvailable = false;
-    for (const step of steps.items) {
+    const jobId =
+      isScalar(pair.key) && typeof pair.key.value === "string"
+        ? pair.key.value
+        : undefined;
+    for (const [stepIndex, step] of steps.items.entries()) {
       if (!isMap(step)) {
+        if (jobId) unverifiedSteps.push({ jobId, stepIndex });
         issues.push({
           code: "PIPE203",
           message: "Step is not a static mapping",
@@ -640,7 +813,10 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
         continue;
       }
       const checkout = step.has("uses") && modeledCheckout(step);
-      if (step.has("uses") && !checkout) unsupported(step, "uses", issues);
+      if (step.has("uses") && !checkout) {
+        unsupported(step, "uses", issues);
+        if (jobId) unverifiedSteps.push({ jobId, stepIndex });
+      }
       unsupported(step, "continue-on-error", issues);
       unsupported(step, "timeout-minutes", issues);
       if (step.has("run") && !step.has("uses"))
@@ -667,6 +843,23 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
       }
       const run = step.get("run", true);
       if (checkout) repositoryAvailable = true;
+      if (stringAt(step, "uses") === "nick-fields/retry@v3") {
+        const withNode = step.get("with", true);
+        const command = isMap(withNode)
+          ? withNode.get("command", true)
+          : undefined;
+        if (
+          isMap(withNode) &&
+          stringAt(withNode, "shell") === "bash" &&
+          isScalar(command) &&
+          typeof command.value === "string"
+        )
+          opaqueCommands.push({
+            script: command.value,
+            map: mapYamlScalar(source, command),
+            span: createSpan(command.range?.[0] ?? 0, command.range?.[1] ?? 0),
+          });
+      }
       if (run === undefined) continue;
       if (!isScalar(run) || typeof run.value !== "string") {
         issues.push({
@@ -689,6 +882,7 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
         rootWorkingDirectory: jobRootCwd && !step.has("working-directory"),
         repositoryAvailable,
         env,
+        stepIndex,
         conditional: step.has("if"),
         ...(stepIf ? { condition: stepIf } : {}),
         ...(isScalar(pair.key) && typeof pair.key.value === "string"
@@ -698,5 +892,11 @@ export function extractGithubWorkflow(source: string): GithubWorkflow {
       });
     }
   }
-  return finish(inputs, workflowCallOutputs(workflow), callable, callInputs);
+  return finish(
+    inputs,
+    workflowCallOutputs(workflow),
+    callable,
+    callInputs,
+    callSecrets,
+  );
 }

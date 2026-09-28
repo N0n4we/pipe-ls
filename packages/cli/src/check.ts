@@ -155,6 +155,7 @@ function githubEnvValue(
         return wire.encoded
           ? { kind: "json", type: wire.type }
           : { kind: "raw" };
+      if (inputWires !== undefined) return { kind: "unknown" };
       const type = inputs[direct.slice(7)];
       return type?.kind === "primitive" && type.name === "string"
         ? { kind: "raw" }
@@ -232,6 +233,55 @@ function githubDefaultWire(value: string | number | boolean): GithubFileValue {
       text: value,
     };
   }
+}
+
+function invalidateGithubEnvFacts(
+  environments: Map<string, Record<string, GithubFileValue>>,
+  jobId: string,
+  names?: readonly string[],
+): void {
+  if (names === undefined) {
+    environments.delete(jobId);
+    return;
+  }
+  const known = environments.get(jobId);
+  if (!known) return;
+  for (const name of names) delete known[name];
+  if (Object.keys(known).length === 0) environments.delete(jobId);
+}
+
+interface StepBarrierState {
+  readonly indices: number[];
+  cursor: number;
+}
+
+function unverifiedStepBarriers(
+  workflow: GithubWorkflow,
+): Map<string, StepBarrierState> {
+  const barriers = new Map<string, StepBarrierState>();
+  for (const step of workflow.unverifiedSteps) {
+    const state = barriers.get(step.jobId) ?? { indices: [], cursor: 0 };
+    state.indices.push(step.stepIndex);
+    barriers.set(step.jobId, state);
+  }
+  return barriers;
+}
+
+function crossedUnverifiedStep(
+  barriers: Map<string, StepBarrierState>,
+  unit: RunUnit,
+): boolean {
+  const state = barriers.get(unit.jobId ?? "");
+  if (!state) return false;
+  let crossed = false;
+  while (
+    state.cursor < state.indices.length &&
+    (state.indices[state.cursor] ?? Number.POSITIVE_INFINITY) <= unit.stepIndex
+  ) {
+    crossed = true;
+    state.cursor++;
+  }
+  return crossed;
 }
 
 function githubFromJsonPath(
@@ -687,6 +737,41 @@ export async function checkPaths(
     if (!result) markUnverified(path);
     return result;
   };
+  const inspectOpaqueCommands = (
+    path: string,
+    source: string,
+    workflow: GithubWorkflow,
+  ): void => {
+    for (const command of workflow.opaqueCommands) {
+      checkedUnits++;
+      if (command.script.includes("${{")) {
+        diagnostics.push(
+          detail(
+            path,
+            source,
+            blocked(
+              "PIPE203",
+              "Opaque action command contains an unanalyzed GitHub expression",
+              command.span,
+            ),
+          ),
+        );
+        continue;
+      }
+      // The action remains unsupported: inspect only the Bash body and never
+      // propagate its environment writes, outputs or external effects.
+      const analysis = analyzeScript(command.script, parser, {
+        githubFiles: true,
+      });
+      for (const item of analysis.diagnostics)
+        diagnostics.push(
+          detail(path, source, {
+            ...item,
+            span: command.map.mapSpan(item.span).span,
+          }),
+        );
+    }
+  };
   const verifyCallableWorkflow = (
     root: string,
     path: string,
@@ -705,11 +790,13 @@ export async function checkPaths(
               : "blocked",
         }),
       );
+    inspectOpaqueCommands(path, source, workflow);
     const hostContextProven = workflow.issues.length === 0;
     const runJobs = new Set(workflow.runs.map((unit) => unit.jobId));
     if (
       !workflow.workflowCallable ||
       !workflow.workflowCallInputs ||
+      !workflow.workflowCallSecrets ||
       workflow.workflowCallOutputs?.length !== 0 ||
       workflow.dependencies.length > 0 ||
       workflow.jobOutputMappings.length > 0 ||
@@ -722,8 +809,11 @@ export async function checkPaths(
     )
       return false;
     const priorEnv = new Map<string, Record<string, GithubFileValue>>();
+    const barriers = unverifiedStepBarriers(workflow);
     for (const unit of workflow.runs) {
       checkedUnits++;
+      if (unit.jobId && crossedUnverifiedStep(barriers, unit))
+        invalidateGithubEnvFacts(priorEnv, unit.jobId);
       if (
         unit.shell !== "bash" ||
         (unit.conditional &&
@@ -738,6 +828,7 @@ export async function checkPaths(
             }))) ||
         unit.script.includes("${{")
       ) {
+        if (unit.jobId) invalidateGithubEnvFacts(priorEnv, unit.jobId);
         diagnostics.push(
           detail(
             path,
@@ -839,16 +930,19 @@ export async function checkPaths(
             span: unit.map.mapSpan(issue.span).span,
           }),
         );
-      if (
-        hostContextProven &&
-        analysis.complete &&
-        envProven &&
-        !unit.conditional &&
-        unit.jobId
-      ) {
-        const environment = priorEnv.get(unit.jobId) ?? Object.create(null);
-        Object.assign(environment, analysis.effects.githubEnv);
-        priorEnv.set(unit.jobId, environment);
+      if (unit.jobId) {
+        if (hostContextProven && analysis.complete && envProven) {
+          invalidateGithubEnvFacts(
+            priorEnv,
+            unit.jobId,
+            analysis.effects.githubEnvMayWrite,
+          );
+          if (!unit.conditional) {
+            const environment = priorEnv.get(unit.jobId) ?? Object.create(null);
+            Object.assign(environment, analysis.effects.githubEnv);
+            priorEnv.set(unit.jobId, environment);
+          }
+        } else invalidateGithubEnvFacts(priorEnv, unit.jobId);
       }
     }
     return diagnostics.length === before;
@@ -890,6 +984,7 @@ export async function checkPaths(
                 : "blocked",
           }),
         );
+      inspectOpaqueCommands(target.path, source, workflow);
       const pendingCalls: Array<{
         readonly dependency: LocalDependency;
         readonly callee: GithubWorkflow;
@@ -1038,6 +1133,7 @@ export async function checkPaths(
           (ranks.get(a.jobId ?? "") ?? Number.MAX_SAFE_INTEGER) -
           (ranks.get(b.jobId ?? "") ?? Number.MAX_SAFE_INTEGER),
       );
+      const barriers = unverifiedStepBarriers(workflow);
       let priorJob: string | undefined;
       const finishedJobs = new Set<string>();
       for (const unit of orderedRuns) {
@@ -1046,6 +1142,10 @@ export async function checkPaths(
           finishedJobs.add(priorJob);
         }
         priorJob = unit.jobId;
+        if (unit.jobId && crossedUnverifiedStep(barriers, unit)) {
+          invalidateGithubEnvFacts(jobEnvironment, unit.jobId);
+          unprovenEnvironmentJobs.add(unit.jobId);
+        }
         const producerKey =
           unit.jobId && unit.stepId
             ? `${unit.jobId}\0${unit.stepId}`
@@ -1087,7 +1187,10 @@ export async function checkPaths(
           );
         checkedUnits++;
         if (unit.shell !== "bash") {
-          if (unit.jobId) unprovenEnvironmentJobs.add(unit.jobId);
+          if (unit.jobId) {
+            invalidateGithubEnvFacts(jobEnvironment, unit.jobId);
+            unprovenEnvironmentJobs.add(unit.jobId);
+          }
           diagnostics.push(
             detail(
               target.path,
@@ -1211,7 +1314,10 @@ export async function checkPaths(
         }
         const envProven = diagnostics.length === beforeEnv;
         if (unit.script.includes("${{")) {
-          if (unit.jobId) unprovenEnvironmentJobs.add(unit.jobId);
+          if (unit.jobId) {
+            invalidateGithubEnvFacts(jobEnvironment, unit.jobId);
+            unprovenEnvironmentJobs.add(unit.jobId);
+          }
           diagnostics.push(
             detail(
               target.path,
@@ -1255,12 +1361,28 @@ export async function checkPaths(
             detail(target.path, source, { ...item, span: origin }),
           );
         }
-        if (analysis.complete && envProven && !unit.conditional && unit.jobId) {
-          const environment =
-            jobEnvironment.get(unit.jobId) ?? Object.create(null);
-          Object.assign(environment, analysis.effects.githubEnv);
-          jobEnvironment.set(unit.jobId, environment);
-        } else if (unit.jobId) unprovenEnvironmentJobs.add(unit.jobId);
+        if (unit.jobId) {
+          if (analysis.complete && envProven) {
+            const mayWrite = analysis.effects.githubEnvMayWrite;
+            invalidateGithubEnvFacts(jobEnvironment, unit.jobId, mayWrite);
+            if (!unit.conditional) {
+              const environment =
+                jobEnvironment.get(unit.jobId) ?? Object.create(null);
+              Object.assign(environment, analysis.effects.githubEnv);
+              jobEnvironment.set(unit.jobId, environment);
+            }
+            const definite = new Set(Object.keys(analysis.effects.githubEnv));
+            if (
+              mayWrite.some((name) =>
+                unit.conditional ? true : !definite.has(name),
+              )
+            )
+              unprovenEnvironmentJobs.add(unit.jobId);
+          } else {
+            invalidateGithubEnvFacts(jobEnvironment, unit.jobId);
+            unprovenEnvironmentJobs.add(unit.jobId);
+          }
+        }
         if (producerKey)
           stepOutputs.set(producerKey, {
             complete: analysis.complete && envProven && !unit.conditional,
@@ -1298,6 +1420,37 @@ export async function checkPaths(
       for (const call of pendingCalls) {
         const { dependency, callee } = call;
         const beforeCall = diagnostics.length;
+        if (callee.workflowCallSecrets) {
+          const supplied = dependency.secrets;
+          for (const [name, required] of Object.entries(
+            callee.workflowCallSecrets,
+          ))
+            if (
+              required &&
+              supplied !== "inherit" &&
+              supplied !== "unverified" &&
+              !supplied?.includes(name)
+            )
+              diagnostics.push(
+                detail(target.path, source, {
+                  code: "PIPE104",
+                  message: `Reusable workflow ${dependency.path} requires secret ${name}`,
+                  span: dependency.span,
+                  status: "error",
+                }),
+              );
+          if (supplied && supplied !== "inherit" && supplied !== "unverified")
+            for (const name of supplied)
+              if (!Object.hasOwn(callee.workflowCallSecrets, name))
+                diagnostics.push(
+                  detail(target.path, source, {
+                    code: "PIPE104",
+                    message: `Reusable workflow ${dependency.path} has no secret ${name}`,
+                    span: dependency.span,
+                    status: "error",
+                  }),
+                );
+        }
         const inputWires: Record<string, GithubFileValue> = Object.create(null);
         if (callee.workflowCallInputs) {
           const bindings: NonNullable<LocalDependency["with"]> =
@@ -1370,15 +1523,15 @@ export async function checkPaths(
             else inputWires[name] = actual.wire;
           }
         }
-        const verified =
-          diagnostics.length === beforeCall &&
-          verifyCallableWorkflow(
-            target.root,
-            call.path,
-            call.source,
-            callee,
-            inputWires,
-          );
+        const inputsVerified = diagnostics.length === beforeCall;
+        const calleeVerified = verifyCallableWorkflow(
+          target.root,
+          call.path,
+          call.source,
+          callee,
+          inputWires,
+        );
+        const verified = inputsVerified && calleeVerified;
         if (!verified) {
           unverifiedDependencies.add(pathToFileURL(call.path).href);
           diagnostics.push(
@@ -1406,12 +1559,26 @@ export async function checkPaths(
       a.offset.start - b.offset.start ||
       a.code.localeCompare(b.code),
   );
+  const seenDiagnostics = new Set<string>();
+  const uniqueDiagnostics = diagnostics.filter((item) => {
+    const key = JSON.stringify([
+      item.uri,
+      item.offset.start,
+      item.offset.end,
+      item.code,
+      item.message,
+      item.status,
+    ]);
+    if (seenDiagnostics.has(key)) return false;
+    seenDiagnostics.add(key);
+    return true;
+  });
   return {
     schemaVersion: 1,
     version: CLI_VERSION,
     checkedUnits,
-    complete: diagnostics.length === 0,
-    diagnostics,
+    complete: uniqueDiagnostics.length === 0,
+    diagnostics: uniqueDiagnostics,
     unverifiedDependencies: [...unverifiedDependencies].sort(),
     fileEffects: [...fileEffects].sort(),
     externalEffects: [...externalEffects].sort(),

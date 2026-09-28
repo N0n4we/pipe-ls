@@ -318,7 +318,7 @@ describe("case 1 scenario matrix", () => {
     ).toHaveLength(5);
     expect(
       matrix.cases.filter((scenario) => scenario.kind === "negative"),
-    ).toHaveLength(13);
+    ).toHaveLength(14);
     expect(
       matrix.cases.filter((scenario) => scenario.kind === "blocked"),
     ).toHaveLength(5);

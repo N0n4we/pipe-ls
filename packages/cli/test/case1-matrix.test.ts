@@ -54,6 +54,7 @@ describe("case 1 executable diagnostic subset", () => {
         "missing-job-output-map",
         "conditional-step-output",
         "missing-required-env",
+        "missing-reusable-secret",
         "consume-ci-without-workflow-output",
         "jq-raw-stdout-string",
         "jq-multiple-stdout-values",
@@ -93,6 +94,46 @@ describe("case 1 executable diagnostic subset", () => {
     );
     expect(called.map((issue) => issue.code)).toContain("PIPE202");
     expect(called.map((issue) => issue.code)).not.toContain("PIPE204");
+    const callee = workflow.diagnostics.filter((issue) =>
+      issue.uri.endsWith("/do-rollout-restart.yaml"),
+    );
+    expect(
+      callee.some(
+        (issue) =>
+          issue.code === "PIPE204" &&
+          issue.message.includes("tool-versions.env"),
+      ),
+    ).toBe(true);
+    expect(
+      callee.some(
+        (issue) =>
+          issue.code === "PIPE201" &&
+          issue.message === "Command sha256sum has no contract",
+      ),
+    ).toBe(true);
+    expect(
+      callee.some(
+        (issue) =>
+          issue.code === "PIPE202" &&
+          issue.message.includes("HUAWEI_CLOUD_CLI_URL"),
+      ),
+    ).toBe(true);
+    expect(callee.map((issue) => issue.code)).not.toContain("PIPE101");
+    const retryLine = readFileSync(
+      join(fixture, ".github/workflows/do-rollout-restart.yaml"),
+      "utf8",
+    )
+      .split("\n")
+      .findIndex((line) =>
+        line.includes("clusters=$(hcloud cce ListClusters)"),
+      );
+    expect(retryLine).toBeGreaterThan(0);
+    expect(
+      callee.some(
+        (issue) =>
+          issue.code === "PIPE201" && issue.range.start.line === retryLine,
+      ),
+    ).toBe(true);
   });
 
   it("keeps a missing local reusable workflow as a blocking matrix case", async () => {
@@ -333,6 +374,50 @@ jobs:
         expect(
           report.diagnostics.map((diagnostic) => diagnostic.code),
         ).toContain(code);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a case 1 restart call that omits the callee's required secret", async () => {
+    const item = byId("missing-reusable-secret");
+    const mutation = item.mutation;
+    if (!mutation?.search || mutation.replace === undefined)
+      throw new Error("Missing reusable secret mutation is incomplete");
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-case1-secret-"));
+    try {
+      for (const relative of [
+        ".github/workflows/cloud.yaml",
+        ".github/workflows/do-rollout-restart.yaml",
+        ".github/scripts/parse-cloud-images.sh",
+        ".github/scripts/update-cloud-images.sh",
+      ]) {
+        const target = join(root, relative);
+        mkdirSync(dirname(target), { recursive: true });
+        copyFileSync(join(fixture, relative), target);
+      }
+      const entry = join(root, item.entry);
+      const original = readFileSync(entry, "utf8");
+      expect(original.split(mutation.search)).toHaveLength(2);
+      const before = await checkPaths([entry]);
+      expect(
+        before.diagnostics.some((issue) =>
+          issue.message.includes(
+            "requires secret CLOUD_ONE_PASSWORD_SERVICE_ACCOUNT_TOKEN",
+          ),
+        ),
+      ).toBe(false);
+      writeFileSync(entry, original.replace(mutation.search, mutation.replace));
+      const after = await checkPaths([entry]);
+      expect(
+        after.diagnostics.some(
+          (issue) =>
+            issue.code === "PIPE104" &&
+            issue.message.includes(
+              "requires secret CLOUD_ONE_PASSWORD_SERVICE_ACCOUNT_TOKEN",
+            ),
+        ),
+      ).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

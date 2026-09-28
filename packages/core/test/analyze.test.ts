@@ -27,6 +27,7 @@ describe("conservative Bash/jq vertical slice", () => {
 set -e
 { printf 'A=%s\\n' "$(jq -cn --arg value "$NAME" '$value')"; printf 'B=%s\\n' '"fixed"'; } >> "$GITHUB_ENV"
 printf 'target=%s\\n' "$(jq -cn '{aws: {namespace: "prod"}}')" >> "$GITHUB_OUTPUT"
+printf 'GITHUB_TOKEN=%s\\n' '"output-name-only"' >> "$GITHUB_OUTPUT"
 `;
       const result = analyzeScript(source, parser, { githubFiles: true });
       expect(result.diagnostics).toEqual([]);
@@ -41,6 +42,10 @@ printf 'target=%s\\n' "$(jq -cn '{aws: {namespace: "prod"}}')" >> "$GITHUB_OUTPU
       expect(result.effects.githubOutput.target).toMatchObject({
         encoded: true,
         type: { kind: "object" },
+      });
+      expect(result.effects.githubOutput.GITHUB_TOKEN).toMatchObject({
+        encoded: true,
+        text: '"output-name-only"',
       });
       expect(
         analyzeScript(source, parser).diagnostics.map((d) => d.code),
@@ -85,6 +90,9 @@ printf 'target=%s\\n' "$(jq -cn '{aws: {namespace: "prod"}}')" >> "$GITHUB_OUTPU
         " NAME=value\n",
         "NAME=value\r\n",
         "NAME=ok\0bad\n",
+        "NAME=ok\nNODE_OPTIONS=--require=evil\n",
+        "NAME=ok\nGITHUB_TOKEN=spoofed\n",
+        "NAME=ok\nRUNNER_TEMP=/tmp/spoofed\n",
       ]) {
         const result = analyzeScript(script, parser, {
           githubFiles: true,
@@ -102,6 +110,42 @@ printf 'target=%s\\n' "$(jq -cn '{aws: {namespace: "prod"}}')" >> "$GITHUB_OUTPU
         },
       );
       expect(changedFilter.complete).toBe(false);
+    } finally {
+      parser.delete();
+    }
+  });
+
+  it("treats GitHub HOME and RUNNER_TEMP as existing but unlocated runner paths", async () => {
+    const parser = await createBashParser(runtime, grammar);
+    try {
+      for (const name of ["HOME", "RUNNER_TEMP"]) {
+        const source = `# @pipe stdout: string\njq -n --arg path "$${name}" '$path'\n`;
+        expect(
+          analyzeScript(source, parser, { githubFiles: true }).diagnostics,
+        ).toEqual([]);
+        expect(
+          analyzeScript(source, parser).diagnostics.map((item) => item.code),
+        ).toContain("PIPE202");
+        const unknownFile = `[[ -f "$${name}/pins.env" ]]\n`;
+        expect(
+          analyzeScript(unknownFile, parser, {
+            githubFiles: true,
+            readLocalFile: () => {
+              throw new Error("Unknown runner path must not be read");
+            },
+          }).diagnostics.map((item) => item.code),
+        ).toContain("PIPE202");
+      }
+      const child = {
+        contract: parseScriptContract("# @pipe env RUNNER_TEMP: string\n"),
+        complete: true,
+      };
+      expect(
+        analyzeScript("./child.sh\n", parser, {
+          githubFiles: true,
+          resolveLocalScript: () => child,
+        }).diagnostics.map((item) => item.code),
+      ).toContain("PIPE101");
     } finally {
       parser.delete();
     }
@@ -195,6 +239,7 @@ if [[ "$FLAG" == yes ]]; then printf 'READY=%s\\n' '"yes"' >> "$GITHUB_ENV"; els
       const changed = analyzeScript(maybe, parser, { githubFiles: true });
       expect(changed.diagnostics).toEqual([]);
       expect(changed.effects.githubEnv.READY).toBeUndefined();
+      expect(changed.effects.githubEnvMayWrite).toContain("READY");
       const caseWrite = `# @pipe env FLAG: string
 case "$FLAG" in a) echo "need_commit=false";; *) echo "need_commit=true";; esac >> "$GITHUB_OUTPUT"
 `;
@@ -216,6 +261,9 @@ case "$FLAG" in a) echo "need_commit=false";; *) echo "need_commit=true";; esac 
         `printf 'X=%s\\n' "$(jq -n '{x: 1}')" >> "$GITHUB_OUTPUT"\n`,
         `GITHUB_ENV=local\nprintf 'X=%s\\n' '"x"' >> "$GITHUB_ENV"\n`,
         `printf 'X=%s' '"x"' >> "$GITHUB_ENV"\n`,
+        `printf 'GITHUB_TOKEN=%s\\n' 'spoofed' >> "$GITHUB_ENV"\n`,
+        `printf 'RUNNER_TEMP=%s\\n' '/tmp/spoofed' >> "$GITHUB_ENV"\n`,
+        `printf 'NODE_OPTIONS=%s\\n' '--require=evil' >> "$GITHUB_ENV"\n`,
       ]) {
         const result = analyzeScript(source, parser, { githubFiles: true });
         expect(result.complete, source).toBe(false);
@@ -791,6 +839,114 @@ case "$FLAG" in a) echo "need_commit=false";; *) echo "need_commit=true";; esac 
     }
   });
 
+  it("splits read -r -a on the default Bash IFS without assuming a custom IFS", async () => {
+    const parser = await createBashParser(runtime, grammar);
+    try {
+      const finite = `# @pipe stdout: number\nread -r -a items <<< '  a\tb  '\nfor item in "${"$"}{items[@]}"; do case "$item" in a|b) ;; *) unknown-business-command;; esac; done\njq -n '1'\n`;
+      expect(analyzeScript(finite, parser).diagnostics).toEqual([]);
+      const empty = `# @pipe stdout: number\nread -r -a items <<< '   '\nfor item in "${"$"}{items[@]}"; do unknown-business-command; done\njq -n '1'\n`;
+      expect(analyzeScript(empty, parser).diagnostics).toEqual([]);
+      const comma = `# @pipe stdout: "a,b"\nread -r -a items <<< 'a,b'\nfor item in "${"$"}{items[@]}"; do jq -n --arg value "$item" '$value'; done\n`;
+      expect(analyzeScript(comma, parser).diagnostics).toEqual([]);
+      const dynamic = `# @pipe stdin: string\n# @pipe stdout: number\nname="$(jq -r '.')"\nread -r -a items <<< "$name"\nfor item in "${"$"}{items[@]}"; do unused=1; done\njq -n '1'\n`;
+      expect(analyzeScript(dynamic, parser).diagnostics).toEqual([]);
+      const custom = `IFS=';'\nread -r -a items <<< 'a;b'\n`;
+      expect(
+        analyzeScript(custom, parser).diagnostics.map((item) => item.code),
+      ).toContain("PIPE202");
+      const inherited = `# @pipe env IFS: string\nread -r -a items <<< 'a b'\n`;
+      expect(
+        analyzeScript(inherited, parser).diagnostics.map((item) => item.code),
+      ).toContain("PIPE202");
+    } finally {
+      parser.delete();
+    }
+  });
+
+  it("compares verified Bash string lengths without treating arbitrary strings as integers", async () => {
+    const parser = await createBashParser(runtime, grammar);
+    try {
+      const finite = `# @pipe stdout: number\nname='abc'\n[[ ${"$"}{#name} -le 3 ]] || unknown-business-command\njq -n '1'\n`;
+      expect(analyzeScript(finite, parser).diagnostics).toEqual([]);
+      const dynamic = `# @pipe env NAME: string\n# @pipe stdout: number\n[[ ${"$"}{#NAME} -le 63 ]] || exit 1\njq -n '1'\n`;
+      expect(analyzeScript(dynamic, parser).diagnostics).toEqual([]);
+      const fatalGroup = `# @pipe env NAME: string\n# @pipe stdout: number\n[[ ${"$"}{#NAME} -le 63 ]] || { printf 'too long\\n' >&2; exit 1; }\njq -n '1'\n`;
+      expect(analyzeScript(fatalGroup, parser).diagnostics).toEqual([]);
+      const notInteger = `# @pipe env NAME: string\n[[ "$NAME" -le 63 ]]\n`;
+      expect(
+        analyzeScript(notInteger, parser).diagnostics.map((item) => item.code),
+      ).toContain("PIPE202");
+      const nonAscii = `# @pipe stdout: number\nname='😀'\n[[ ${"$"}{#name} -le 1 ]] || unknown-business-command\njq -n '1'\n`;
+      expect(
+        analyzeScript(nonAscii, parser).diagnostics.map((item) => item.code),
+      ).toContain("PIPE201");
+      const declaration =
+        "pattern='^[a-z0-9]([-a-z0-9.]*[a-z0-9])?( [a-z0-9]([-a-z0-9.]*[a-z0-9])?)*$'";
+      const fixedRegex = `# @pipe env NAME: string\n${declaration}\n[[ "$NAME" =~ $pattern ]] || { printf 'invalid\\n' >&2; exit 1; }\n`;
+      expect(analyzeScript(fixedRegex, parser).diagnostics).toEqual([]);
+      for (const source of [
+        fixedRegex.replace(declaration, "# @pipe env pattern: string"),
+        fixedRegex.replace(declaration, "pattern='[[:alpha:]]'"),
+        fixedRegex.replace(declaration, "pattern='[z-a]'"),
+        fixedRegex.replace("# @pipe env NAME: string\n", "NAME=abc\n"),
+      ])
+        expect(
+          analyzeScript(source, parser).diagnostics.map((item) => item.code),
+          source,
+        ).toContain("PIPE202");
+      const missingFile = `file='/missing'\n[[ -f "$file" ]] || { printf 'missing\\n' >&2; exit 1; }\nunknown-business-command\n`;
+      const missingResult = analyzeScript(missingFile, parser, {
+        readLocalFile: () => ({ kind: "unavailable", reason: "missing" }),
+      });
+      expect(missingResult.diagnostics.map((item) => item.code)).toContain(
+        "PIPE204",
+      );
+      expect(missingResult.diagnostics.map((item) => item.code)).not.toContain(
+        "PIPE201",
+      );
+    } finally {
+      parser.delete();
+    }
+  });
+
+  it("re-associates a Bash length guard and regex test without skipping either operand", async () => {
+    const parser = await createBashParser(runtime, grammar);
+    try {
+      const source = `# @pipe env NAME: string\n# @pipe stdout: number\n[[ ${"$"}{#NAME} -le 63 && "$NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || { printf 'invalid\\n' >&2; exit 1; }\njq -n '1'\n`;
+      expect(analyzeScript(source, parser).diagnostics).toEqual([]);
+      const badBound = source.replace("-le 63", "-le bad");
+      expect(
+        analyzeScript(badBound, parser).diagnostics.map((item) => item.code),
+      ).toContain("PIPE202");
+      const dynamicRegex = source.replace(
+        "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        "$UNVERIFIED_PATTERN",
+      );
+      expect(
+        analyzeScript(dynamicRegex, parser).diagnostics.map(
+          (item) => item.code,
+        ),
+      ).toContain("PIPE202");
+      const invalidRegex = source.replace(
+        "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        "[z-a]",
+      );
+      expect(
+        analyzeScript(invalidRegex, parser).diagnostics.map(
+          (item) => item.code,
+        ),
+      ).toContain("PIPE202");
+      const wrongOperator = source.replace(" -le 63 && ", " -le 63 || ");
+      expect(
+        analyzeScript(wrongOperator, parser).diagnostics.map(
+          (item) => item.code,
+        ),
+      ).toContain("PIPE202");
+    } finally {
+      parser.delete();
+    }
+  });
+
   it("models finite Bash tag and digest parameter removal as raw bytes", async () => {
     const parser = await createBashParser(runtime, grammar);
     try {
@@ -971,6 +1127,91 @@ case "$FLAG" in a) echo "need_commit=false";; *) echo "need_commit=true";; esac 
       );
       expect(result.complete).toBe(false);
       expect(result.diagnostics.map((item) => item.code)).toEqual(["PIPE201"]);
+    } finally {
+      parser.delete();
+    }
+  });
+
+  it("reports direct argument variables even when the external command is unknown", async () => {
+    const parser = await createBashParser(runtime, grammar);
+    try {
+      const source = `known=ok\nunknown-business-command "$MISSING" "$known" "\${DEFAULTED:-fallback}" '$LITERAL'\n`;
+      const result = analyzeScript(source, parser);
+      expect(result.complete).toBe(false);
+      expect(result.diagnostics.map((item) => item.code)).toContain("PIPE201");
+      expect(
+        result.diagnostics.some(
+          (item) =>
+            item.code === "PIPE202" &&
+            item.message === "Unknown Bash variable MISSING",
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(result.diagnostics)).not.toContain("LITERAL");
+      expect(JSON.stringify(result.diagnostics)).not.toContain("DEFAULTED");
+    } finally {
+      parser.delete();
+    }
+  });
+
+  it("still reports an independently unknown pipeline consumer after its producer blocks", async () => {
+    const parser = await createBashParser(runtime, grammar);
+    try {
+      const source = "printf '%s\\n' \"$MISSING\" | sha256sum --check -\n";
+      const result = analyzeScript(source, parser);
+      expect(result.complete).toBe(false);
+      expect(result.diagnostics.map((item) => item.code)).toContain("PIPE202");
+      expect(
+        result.diagnostics.some(
+          (item) =>
+            item.code === "PIPE201" &&
+            item.message === "Command sha256sum has no contract" &&
+            source
+              .slice(item.span.start, item.span.end)
+              .startsWith("sha256sum"),
+        ),
+      ).toBe(true);
+      const known = analyzeScript("jq -n '1' | jq '.'\n", parser);
+      expect(known.complete).toBe(true);
+      expect(known.diagnostics).toEqual([]);
+    } finally {
+      parser.delete();
+    }
+  });
+
+  it("keeps native text pipelines distinct from JSON script boundaries", async () => {
+    const parser = await createBashParser(runtime, grammar);
+    try {
+      const native = analyzeScript(
+        "printf '%s\\n' 'raw' | sha256sum --check -\n",
+        parser,
+      );
+      expect(native.complete).toBe(false);
+      expect(native.diagnostics.map((item) => item.code)).toContain("PIPE201");
+      expect(native.diagnostics.map((item) => item.code)).not.toContain(
+        "PIPE101",
+      );
+      const json = analyzeScript("printf '%s\\n' 'raw' | jq '.'\n", parser);
+      expect(json.diagnostics.map((item) => item.code)).toContain("PIPE101");
+      const child = analyzeScript(
+        "printf '%s\\n' 'raw' | ./child.sh\n",
+        parser,
+        {
+          resolveLocalScript: () => ({
+            contract: parseScriptContract("# @pipe stdin: string\n"),
+            complete: true,
+          }),
+        },
+      );
+      expect(child.diagnostics.map((item) => item.code)).toContain("PIPE101");
+      const ignored = analyzeScript("jq -n '1' | printf '%s\\n' '2'\n", parser);
+      expect(ignored.complete).toBe(false);
+      expect(ignored.diagnostics.map((item) => item.code)).toContain("PIPE202");
+      const noInput = analyzeScript(
+        "printf '%s\\n' 'raw' | jq -n '1'\n",
+        parser,
+      );
+      expect(noInput.complete).toBe(false);
+      expect(noInput.diagnostics.map((item) => item.code)).toContain("PIPE202");
     } finally {
       parser.delete();
     }
@@ -1333,6 +1574,7 @@ case "$FLAG" in a) echo "need_commit=false";; *) echo "need_commit=true";; esac 
           effects: {
             filesMayWrite: ["/project/resources/overlay.yaml"],
             githubEnv: {},
+            githubEnvMayWrite: [],
             githubOutput: {},
             externalMayRun: [],
           },

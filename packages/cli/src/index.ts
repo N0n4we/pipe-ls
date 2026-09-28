@@ -1,3 +1,4 @@
+import { ProjectDiscoveryError } from "@pipe-ls/workspace";
 import { CLI_VERSION, checkPaths } from "./check.js";
 
 export {
@@ -46,7 +47,11 @@ export async function runCli(
     }
     return report.complete ? 0 : 1;
   } catch (cause) {
-    error(`${cause instanceof Error ? cause.message : String(cause)}\n`);
+    error(
+      cause instanceof ProjectDiscoveryError
+        ? `${cause.message}\n`
+        : "Internal pipe-ls check failed; no result was produced.\n",
+    );
     return 2;
   }
 }

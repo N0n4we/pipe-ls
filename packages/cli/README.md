@@ -3,7 +3,7 @@
 Read-only static checks for convention-based Bash + jq scripts and GitHub Actions.
 Requires Node.js 22.13 or later.
 
-Once published to npm:
+Install from npm:
 
 ```sh
 pnpm add -g @pipe-ls/cli

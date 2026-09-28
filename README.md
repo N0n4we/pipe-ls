@@ -4,7 +4,7 @@
 
 目标不是检查任意 Bash，而是减少约定脚本开发中的猜测与手工核对。首版先交付 Bash + GitHub Actions 的 CLI 静态检查，以 `tests/cases/1` 为覆盖目标；暂不实现 LSP 适配。字段补全、类型提示、跳转、引用、重命名和即时诊断属于后续编辑器能力，复用同一分析核心。
 
-当前已有 UTF-16 Span、Bash/jq/YAML 解析与源码映射、JSON 契约、保守的脚本与 GitHub Actions 静态分析、`.github` 根发现和只读 CLI。case 1 的 23 个矩阵场景现有可执行诊断或受控运行时测试；合成 overlays 与带 JSON 解码的本地 reusable workflow stub 下，`cloud.yaml` 可静态检查通过。**首版仍未完成验收**：原 fixture 缺少 `resources/**` overlays；真实 `do-rollout-restart.yaml` 已收录，但其工具/动作/runner 等上下文尚不能完整静态验证，且华为路径依赖的 `.github/tool-versions.env` 尚未收录。git/gh 目前只摘要固定命令族及少量参数关系，未证明动态路径、远端参数或实际副作用。CLI 已以 `@pipe-ls/cli@0.1.0` 在 npm 公开发布，空缓存离线安装和无凭据注册表安装均通过；项目采用 [MIT 许可证](LICENSE)。更广泛的性能验收仍待完成。LSP 不属于首版范围。
+当前已有 UTF-16 Span、Bash/jq/YAML 解析与源码映射、JSON 契约、保守的脚本与 GitHub Actions 静态分析、`.github` 根发现和只读 CLI。case 1 的 24 个矩阵场景现有可执行诊断或受控运行时测试；合成 overlays 与带 JSON 解码的本地 reusable workflow stub 下，`cloud.yaml` 可静态检查通过。**首版仍未完成验收**：真实 `do-rollout-restart.yaml` 的工具/动作/runner 等上下文尚不能完整静态验证；git/gh 目前只摘要固定命令族及少量参数关系，未证明动态路径、远端参数或实际副作用，更广泛的性能验收也仍待完成。原 fixture 未收录 `resources/**` overlays 和华为路径依赖的 `.github/tool-versions.env`；这是预期的 `PIPE204` 检查障碍，不要求为首版提供或编造生产资源/版本/校验和。CLI 已以 `@pipe-ls/cli@0.1.0` 在 npm 公开发布，空缓存离线安装和无凭据注册表安装均通过；项目采用 [MIT 许可证](LICENSE)。LSP 不属于首版范围。
 
 ## 公开安装
 
@@ -44,7 +44,7 @@ packages/
   lsp/        语言服务适配器（后续阶段，首版不实现）
 ```
 
-依赖方向为 `hosts → core`、`workspace → core/hosts`、`cli → core/hosts/workspace`、`lsp → workspace`。四个 `@pipe-ls/*` 运行时包已以 `0.1.0` 公开发布；根 workspace 和未实现的 LSP 保持 private。`pnpm test:integration` 仅在临时副本中运行 case 1 的五个矩阵输入及 support-portal 回归，不运行 workflow、git/gh 或部署命令。`pnpm test:package` 将四个运行时包及三项固定版本依赖打成 tarball，在**全新空 pnpm store** 的临时目录离线安装，并验证 CLI/WASM 不回链源码仓库、MIT `LICENSE` 和[第三方许可证清单](packages/cli/THIRD_PARTY_NOTICES.md)进入相应包。`pnpm pack:offline` 将同一套 tarball、校验值和安装说明写入 `release/offline-0.1.0/`（已有目录不覆盖；可传入其他输出路径）；这是本地分发物，与 npm 发布包分开。解析/WASM 验证资产的版本、校验值和限制见[解析原型验证记录](docs/parser-prototype.md)；VS Code 客户端尚未实现。
+依赖方向为 `hosts → core`、`workspace → core/hosts`、`cli → core/hosts/workspace`、`lsp → workspace`。四个 `@pipe-ls/*` 运行时包已以 `0.1.0` 公开发布；根 workspace 和未实现的 LSP 保持 private。`pnpm test:integration` 仅在临时副本中运行 case 1 的五个矩阵输入、support-portal 回归，以及真实 `cloud.yaml` 中两个不含远程命令的 run 正文；不运行整个 workflow、git/gh 或部署命令。`pnpm test:package` 将四个运行时包及三项固定版本依赖打成 tarball，在**全新空 pnpm store** 的临时目录离线安装，并验证 CLI/WASM 不回链源码仓库、MIT `LICENSE` 和[第三方许可证清单](packages/cli/THIRD_PARTY_NOTICES.md)进入相应包。`pnpm pack:offline` 将同一套 tarball、校验值和安装说明写入 `release/offline-0.1.0/`（已有目录不覆盖；可传入其他输出路径）；这是本地分发物，与 npm 发布包分开。解析/WASM 验证资产的版本、校验值和限制见[解析原型验证记录](docs/parser-prototype.md)；VS Code 客户端尚未实现。
 
 ## 核心约定
 

@@ -126,4 +126,54 @@ export class ProjectSnapshot {
   dependentsOf(path: string): readonly string[] {
     return [...(this.incoming.get(resolve(path)) ?? [])].sort();
   }
+
+  /** Changed paths and all transitive dependents; a changed directory covers descendants. */
+  affectedByChanges(changedPaths: readonly string[]): readonly string[] {
+    const changed = changedPaths
+      .filter((path) => isAbsolute(path))
+      .map((path) => resolve(path))
+      .filter((path) => this.inside(path));
+    const affected = new Set<string>(changed);
+    const known = new Set([
+      ...this.files.keys(),
+      ...this.directories.keys(),
+      ...this.outgoing.keys(),
+      ...this.incoming.keys(),
+    ]);
+    for (const path of known)
+      if (changed.some((item) => path.startsWith(`${item}${sep}`)))
+        affected.add(path);
+    const pending = [...affected];
+    while (pending.length) {
+      const path = pending.pop() as string;
+      for (const dependent of this.incoming.get(path) ?? [])
+        if (!affected.has(dependent)) {
+          affected.add(dependent);
+          pending.push(dependent);
+        }
+    }
+    return [...affected].sort();
+  }
+
+  /** Fork rather than mutating the immutable read view used by one CLI check. */
+  forkAfterChanges(changedPaths: readonly string[]): {
+    readonly snapshot: ProjectSnapshot;
+    readonly affected: readonly string[];
+  } {
+    const affected = this.affectedByChanges(changedPaths);
+    const invalidated = new Set(affected);
+    const snapshot = new ProjectSnapshot(this.root);
+    for (const [path, read] of this.files)
+      if (!invalidated.has(path)) snapshot.files.set(path, read);
+    for (const [path, read] of this.directories)
+      if (!invalidated.has(path)) snapshot.directories.set(path, read);
+    for (const [source, targets] of this.outgoing) {
+      if (invalidated.has(source)) continue;
+      for (const target of targets) {
+        if (invalidated.has(target)) continue;
+        snapshot.recordDependency(source, target);
+      }
+    }
+    return { snapshot, affected };
+  }
 }

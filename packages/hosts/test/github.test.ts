@@ -1,7 +1,75 @@
 import { describe, expect, it } from "vitest";
-import { extractGithubWorkflow } from "../src/index.js";
+import {
+  extractGithubWorkflow,
+  MAX_WORKFLOW_YAML_ALIASES,
+  MAX_WORKFLOW_YAML_DEPTH,
+  MAX_WORKFLOW_YAML_NODES,
+} from "../src/index.js";
 
 describe("GitHub workflow run extraction", () => {
+  it("does not copy malformed YAML source into syntax diagnostics", () => {
+    const secret = "SECRET_MARKER_MUST_NOT_LEAK";
+    for (const source of [
+      `jobs:\n  test:\n    steps:\n      - run: [${secret}\n`,
+      `jobs:\n  test:\n    steps:\n      - run: "bad\\q${secret}"\n`,
+      `jobs:\n  test: ${secret}: another\n`,
+    ]) {
+      const result = extractGithubWorkflow(source);
+      expect(result.issues.length).toBeGreaterThan(0);
+      expect(result.issues.every((issue) => issue.code === "PIPE001")).toBe(
+        true,
+      );
+      expect(JSON.stringify(result.issues)).not.toContain(secret);
+      for (const issue of result.issues) {
+        expect(issue.message).toMatch(
+          /^Workflow YAML syntax error \([A-Z_0-9]+\)$/u,
+        );
+        expect(issue.span.start).toBeGreaterThanOrEqual(0);
+        expect(issue.span.end).toBeLessThanOrEqual(source.length);
+      }
+    }
+  });
+
+  it("bounds YAML nodes, nesting and aliases before analyzing any run", () => {
+    const base = `jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: echo ok
+`;
+    const ordinary = extractGithubWorkflow(base);
+    expect(ordinary.issues).toEqual([]);
+    expect(ordinary.runs).toHaveLength(1);
+
+    const tooManyNodes = `${base}spare: [${Array.from(
+      { length: MAX_WORKFLOW_YAML_NODES + 1 },
+      () => "0",
+    ).join(", ")}]\n`;
+    const deeplyNested = `${base}spare:\n${Array.from(
+      { length: MAX_WORKFLOW_YAML_DEPTH + 2 },
+      (_, index) => `${"  ".repeat(index + 1)}child:\n`,
+    ).join("")}  ${"  ".repeat(MAX_WORKFLOW_YAML_DEPTH + 2)}end: value\n`;
+    const tooManyAliases = `${base}anchor: &item value\nspare:\n${"  - *item\n".repeat(MAX_WORKFLOW_YAML_ALIASES + 1)}`;
+    const overBudget: readonly (readonly [string, string])[] = [
+      [tooManyNodes, "node"],
+      [deeplyNested, "depth"],
+      [tooManyAliases, "alias"],
+    ];
+    for (const [source, name] of overBudget) {
+      const result = extractGithubWorkflow(source);
+      expect(result.runs, name).toEqual([]);
+      expect(result.issues, name).toEqual([
+        expect.objectContaining({
+          code: "PIPE203",
+          message: `Workflow YAML ${name} budget exceeded`,
+        }),
+      ]);
+    }
+  });
+
   it("keeps original YAML positions and shell inheritance", () => {
     const source =
       "defaults:\n  run:\n    shell: bash\njobs:\n  test:\n    steps:\n      - run: |\n          # @pipe stdout: number\n          jq -n '1, 2'\n      - shell: sh\n        run: echo ignored\n  downstream:\n    uses: ./.github/workflows/missing.yml\n";
@@ -17,6 +85,56 @@ describe("GitHub workflow run extraction", () => {
     expect(result.dependencies.map((item) => item.path)).toEqual([
       "./.github/workflows/missing.yml",
     ]);
+  });
+
+  it("extracts Bash embedded in retry@v3 without trusting the action", () => {
+    const source = `jobs:
+  test:
+    steps:
+      - uses: nick-fields/retry@v3
+        with:
+          shell: bash
+          max_attempts: 3
+          command: |
+            set -e
+            unknown-business-command
+`;
+    const result = extractGithubWorkflow(source);
+    expect(result.issues.map((item) => item.code)).toContain("PIPE203");
+    expect(result.runs).toHaveLength(0);
+    expect(result.unverifiedSteps).toEqual([{ jobId: "test", stepIndex: 0 }]);
+    expect(result.opaqueCommands).toHaveLength(1);
+    const command = result.opaqueCommands[0];
+    expect(command?.script).toContain("unknown-business-command");
+    if (!command) return;
+    const start = command.script.indexOf("unknown-business-command");
+    const mapped = command.map.mapSpan({
+      start,
+      end: start + "unknown-business-command".length,
+    });
+    expect(source.slice(mapped.span.start, mapped.span.end)).toBe(
+      "unknown-business-command",
+    );
+    expect(
+      extractGithubWorkflow(source.replace("shell: bash", "shell: sh"))
+        .opaqueCommands,
+    ).toEqual([]);
+  });
+
+  it("retains step order across trusted checkout and opaque action barriers", () => {
+    const result = extractGithubWorkflow(`jobs:
+  test:
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo first
+      - uses: third-party/action@v1
+      - run: echo second
+`);
+    expect(result.runs.map((run) => run.stepIndex)).toEqual([1, 3]);
+    expect(result.unverifiedSteps).toEqual([{ jobId: "test", stepIndex: 2 }]);
   });
 
   it("blocks inherited working directories until path resolution is modeled", () => {
@@ -155,6 +273,49 @@ jobs:
 `);
     expect(result.workflowCallInputs).toBeUndefined();
     expect(result.issues.map((issue) => issue.code)).toContain("PIPE203");
+  });
+
+  it("extracts reusable secret names without retaining their values", () => {
+    const callee = extractGithubWorkflow(`on:
+  workflow_call:
+    secrets:
+      TOKEN:
+        required: true
+      OPTIONAL:
+        required: false
+jobs:
+  test:
+    steps: []
+`);
+    expect(callee.workflowCallSecrets).toEqual({
+      TOKEN: true,
+      OPTIONAL: false,
+    });
+    const caller = extractGithubWorkflow(`jobs:
+  test:
+    uses: ./.github/workflows/callee.yml
+    secrets:
+      TOKEN: \${{ secrets.PRIVATE_TOKEN }}
+`);
+    expect(caller.dependencies[0]?.secrets).toEqual(["TOKEN"]);
+    expect(JSON.stringify(caller.dependencies)).not.toContain("PRIVATE_TOKEN");
+    const inherited = extractGithubWorkflow(`jobs:
+  test:
+    uses: ./.github/workflows/callee.yml
+    secrets: inherit
+`);
+    expect(inherited.dependencies[0]?.secrets).toBe("inherit");
+    const malformed = extractGithubWorkflow(`on:
+  workflow_call:
+    secrets:
+      TOKEN:
+        required: yes
+jobs:
+  test:
+    steps: []
+`);
+    expect(malformed.workflowCallSecrets).toBeUndefined();
+    expect(malformed.issues.map((issue) => issue.code)).toContain("PIPE203");
   });
 
   it("rejects a reusable job that also declares local steps", () => {

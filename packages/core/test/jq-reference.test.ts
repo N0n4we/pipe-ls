@@ -1,5 +1,26 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  analyzeScript,
+  createBashParser,
+  isAssignable,
+  parseTemplate,
+  templateOfJson,
+} from "../src/index.js";
+
+const require = createRequire(import.meta.url);
+const grammar = readFileSync(
+  resolve(
+    dirname(require.resolve("@vscode/tree-sitter-wasm/package.json")),
+    "wasm/tree-sitter-bash.wasm",
+  ),
+);
+const runtime = readFileSync(
+  resolve(dirname(require.resolve("web-tree-sitter")), "web-tree-sitter.wasm"),
+);
 
 const version = spawnSync("jq", ["--version"], {
   encoding: "utf8",
@@ -8,6 +29,110 @@ const version = spawnSync("jq", ["--version"], {
 const reference = version === "jq-1.8.2" ? it : it.skip;
 
 describe("pinned jq 1.8.2 semantic reference", () => {
+  reference(
+    "keeps bounded case 1 jq inferences sound against generated inputs",
+    async () => {
+      const parser = await createBashParser(runtime, grammar);
+      let seed = 0x50495045;
+      const next = (): number => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return seed;
+      };
+      const platforms = ["aws", "huaweicloud", "other"];
+      const names = ["frontend", "backend", "portal"];
+      const scenarios = [
+        {
+          stdin: '{"images":[{"platform":string}]}',
+          stdout: "[string]",
+          wrongStdout: "[number]",
+          filter:
+            "reduce .images[] as $v ([]; if index($v.platform) == null then . + [$v.platform] else . end)",
+          input: () => ({
+            images: Array.from({ length: next() % 7 }, () => ({
+              platform: platforms[next() % platforms.length],
+            })),
+          }),
+        },
+        {
+          stdin: '{"items":[{"n":number}]}',
+          stdout: "[number]",
+          wrongStdout: "string",
+          filter: "[.items[] | .n]",
+          input: () => ({
+            items: Array.from({ length: next() % 7 }, () => ({
+              n: (next() % 31) - 15,
+            })),
+          }),
+        },
+        {
+          stdin: '{"flag":boolean,"a":number,"b":number}',
+          stdout: "number",
+          wrongStdout: "boolean",
+          filter: "if .flag then .a else .b end",
+          input: () => ({
+            flag: next() % 2 === 0,
+            a: (next() % 31) - 15,
+            b: (next() % 31) - 15,
+          }),
+        },
+        {
+          stdin: '{"images":[{"platform":string,"image_name":string}]}',
+          stdout: "boolean",
+          wrongStdout: "number",
+          filter:
+            ".images as $images | ($images | map([.platform, .image_name])) as $targets | ($targets | length) == ($targets | unique | length)",
+          input: () => ({
+            images: Array.from({ length: next() % 7 }, () => ({
+              platform: platforms[next() % platforms.length],
+              image_name: names[next() % names.length],
+            })),
+          }),
+        },
+      ];
+      try {
+        for (const scenario of scenarios) {
+          const source = `# @pipe stdin: ${scenario.stdin}\n# @pipe stdout: ${scenario.stdout}\njq -c '${scenario.filter}'\n`;
+          const analysis = analyzeScript(source, parser);
+          expect(analysis.complete, scenario.filter).toBe(true);
+          expect(analysis.diagnostics, scenario.filter).toEqual([]);
+          const mismatched = analyzeScript(
+            source.replace(
+              `# @pipe stdout: ${scenario.stdout}`,
+              `# @pipe stdout: ${scenario.wrongStdout}`,
+            ),
+            parser,
+          );
+          expect(mismatched.complete, scenario.filter).toBe(false);
+          const expected = parseTemplate(scenario.stdout);
+          for (let sample = 0; sample < 32; sample++) {
+            const input = scenario.input();
+            const actual = spawnSync("jq", ["-c", scenario.filter], {
+              input: `${JSON.stringify(input)}\n`,
+              encoding: "utf8",
+              timeout: 1000,
+            });
+            expect(
+              actual.status,
+              `${scenario.filter}: ${JSON.stringify(input)}`,
+            ).toBe(0);
+            const lines = actual.stdout.trimEnd().split("\n");
+            expect(lines, scenario.filter).toHaveLength(1);
+            expect(
+              isAssignable(
+                templateOfJson(JSON.parse(lines[0] ?? "")),
+                expected,
+              ),
+              `${scenario.filter}: ${JSON.stringify(input)}`,
+            ).toBe(true);
+          }
+        }
+      } finally {
+        parser.delete();
+      }
+    },
+    15_000,
+  );
+
   reference(
     "distinguishes empty streams, collections and raw string output",
     () => {

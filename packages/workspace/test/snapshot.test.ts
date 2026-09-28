@@ -12,6 +12,72 @@ import { describe, expect, it } from "vitest";
 import { MAX_SOURCE_BYTES, ProjectSnapshot } from "../src/index.js";
 
 describe("read-only project snapshot", () => {
+  it("forks a fresh view for changed dependencies without invalidating unrelated reads", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "pipe-ls-fork-")));
+    try {
+      const entry = join(root, "entry.sh");
+      const middle = join(root, "middle.sh");
+      const leaf = join(root, "leaf.sh");
+      const independent = join(root, "independent.sh");
+      const missing = join(root, "new.env");
+      const directory = join(root, "assets");
+      const config = join(directory, "config.yaml");
+      mkdirSync(directory);
+      for (const path of [entry, middle, leaf, independent, config])
+        writeFileSync(path, "original");
+      const snapshot = new ProjectSnapshot(root);
+      for (const path of [entry, middle, leaf, independent, config])
+        expect(snapshot.read(path)).toEqual({
+          kind: "file",
+          source: "original",
+        });
+      expect(snapshot.read(missing).kind).toBe("unavailable");
+      expect(snapshot.directory(directory).kind).toBe("directory");
+      snapshot.recordDependency(entry, middle);
+      snapshot.recordDependency(middle, leaf);
+      snapshot.recordDependency(entry, config);
+      snapshot.recordDependency(entry, missing);
+
+      writeFileSync(leaf, "changed leaf");
+      writeFileSync(independent, "changed independent");
+      const changedLeaf = snapshot.forkAfterChanges([leaf]);
+      expect(changedLeaf.affected).toEqual([entry, leaf, middle].sort());
+      expect(snapshot.read(leaf)).toEqual({ kind: "file", source: "original" });
+      expect(changedLeaf.snapshot.read(leaf)).toEqual({
+        kind: "file",
+        source: "changed leaf",
+      });
+      expect(changedLeaf.snapshot.read(independent)).toEqual({
+        kind: "file",
+        source: "original",
+      });
+      expect(changedLeaf.snapshot.dependenciesOf(entry)).toEqual([]);
+      expect(snapshot.dependenciesOf(entry)).toEqual(
+        [config, middle, missing].sort(),
+      );
+
+      const changedDirectory = snapshot.forkAfterChanges([directory]);
+      expect(changedDirectory.affected).toEqual(
+        [directory, config, entry].sort(),
+      );
+      expect(changedDirectory.snapshot.dependenciesOf(middle)).toEqual([leaf]);
+
+      writeFileSync(missing, "created");
+      const created = snapshot.forkAfterChanges([missing]);
+      expect(created.affected).toEqual([entry, missing].sort());
+      expect(created.snapshot.read(missing)).toEqual({
+        kind: "file",
+        source: "created",
+      });
+      expect(snapshot.read(missing).kind).toBe("unavailable");
+      expect(
+        snapshot.affectedByChanges(["relative", join(root, "..", "outside")]),
+      ).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("freezes reads, tracks reverse edges and rejects unsafe or oversized paths", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "pipe-ls-snapshot-")));
     const outside = realpathSync(

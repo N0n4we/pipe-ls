@@ -1,6 +1,6 @@
 # Case 1：Cloud 镜像更新
 
-这是首版 CLI 分析范围的真实风格 fixture。P0 解析/源码映射原型及[23 个场景矩阵](matrix.json)已有可执行测试：反例/受阻例经 CLI 诊断断言，五个正例在临时副本中运行 parse/update 脚本。当前 CLI 可完整分析 `parse-cloud-images.sh`；`update-cloud-images.sh` 在临时合成、静态可验证的 overlays 下可通过并报告 60 个 may-write 路径，但原 fixture 因缺失 overlays 阻断。合成 overlays 与带 JSON 解码的本地 reusable workflow stub 下，完整 `cloud.yaml` 静态检查通过；真实被调 workflow 已收录，但其 runner、动作、命令及副作用尚未完整静态验证。git/gh 仅有固定命令族摘要，不证明动态参数及真实副作用，故不能把这套合成测试视为首版全部验收。
+这是首版 CLI 分析范围的真实风格 fixture。P0 解析/源码映射原型及[24 个场景矩阵](matrix.json)已有可执行测试：反例/受阻例经 CLI 诊断断言，五个正例在临时副本中运行 parse/update 脚本。当前 CLI 可完整分析 `parse-cloud-images.sh`；`update-cloud-images.sh` 在临时合成、静态可验证的 overlays 下可通过并报告 60 个 may-write 路径，但原 fixture 因缺失 overlays 阻断。合成 overlays 与带 JSON 解码的本地 reusable workflow stub 下，完整 `cloud.yaml` 静态检查通过；真实被调 workflow 已收录，但其 runner、动作、命令及副作用尚未完整静态验证。git/gh 仅有固定命令族摘要，不证明动态参数及真实副作用，故不能把这套合成测试视为首版全部验收。
 
 ## 项目与接口
 
@@ -11,6 +11,7 @@
 - CI 平台文本经 `toJSON` 注入声明的 env；setup 通过 here-string 和 JSON 管道调用脚本。`GITHUB_ENV` 中的字符串用 `jq --arg` 编码，后续 step 先解码再传给原生工具。`restart_targets` 已是 JSON 对象，不再编码成字符串；`need_commit` 的 true/false 已是 JSON boolean。
 - 所有 run 均无 stdout 业务返回值，因此不声明 stdout，也不为了占位输出 null。setup/commit 仍通过 `GITHUB_OUTPUT` 暴露命名 output，由 job 显式映射；这与 stdout 是两个接口。本 workflow 未声明 `workflow_call` 或 workflow outputs，不能作为可复用 CI 被调用方消费返回值。
 - reusable workflow 的 platform/namespace/name 经 JSON 编码传入 `with`；被调方应按此协议解码。`GH_TOKEN_JSON/GH_REPO_JSON` 在 run 内解码成 gh 原生环境变量，不能输出 token 或把真实凭据用于测试。
+- 被调 workflow 声明的必需 secret 必须由调用 job 的 `secrets: inherit` 或同名显式绑定提供；静态报告只保留 secret 名称，不保存绑定值，也不验证远端凭据是否实际存在。
 
 parse 输入示例（一份 JSON 文档）：
 
@@ -54,10 +55,11 @@ update 输入示例：
 
 - 新的 stdin/env 调用链应满足 JSON 接口约定；测试应覆盖 tag、digest、单/双平台、update-only 的空 restart_targets，及特殊字符经过 env 编解码的保真传输。
 - 反例包括：旧位置参数调用、裸文本 stdin/env、将 parsed_images 重复编码成 string、缺字段、消费无 stdout 脚本或没有显式 output 的 CI、条件跳过导致 output 缺失。
-- 当前未收录 `resources/**` overlays；CLI 对有限目标族/环境展开后的缺失目录报告 `PIPE204`。`.github/workflows/do-rollout-restart.yaml` 已收录，但仍有未建模的 runner、动作、命令和副作用；华为路径依赖的 `.github/tool-versions.env` 尚缺失，不能声称完整通过。
+- 当前未收录 `resources/**` overlays；CLI 对有限目标族/环境展开后的缺失目录报告 `PIPE204`。华为路径依赖的 `.github/tool-versions.env` 也尚缺失，均属于原 fixture 的预期受阻情形，不要求补齐真实生产值。`.github/workflows/do-rollout-restart.yaml` 已收录，但仍有未建模的 runner、动作、命令和副作用，不能声称完整通过。
+- 即使 `curl`、`hcloud` 等命令契约未知，CLI 仍独立诊断其参数中可直接识别的缺失 `$VAR`/`${VAR}`；不据此信任命令执行、输出或副作用，也不把带默认值的复杂参数展开误报为缺失变量。
 - 真实被调 workflow 已声明输入并解码 JSON，但独立检查不能从调用方反推其 wire 一定已编码；调用点应验证实际传入值。测试中的本地 stub 只证明受控形态的分析路径，真实 workflow 仍需完整验收。
 - allowlist 中 OMP 的部分 AWS repository 有重复行，原脚本的 `matches != 1` 会拒绝这些引用。本轮不改变 allowlist 业务数据；这是独立的数据质量问题，不等同于 JSON 接口不匹配。
 
 ## 验证边界
 
-`bash -n` 可以检查两个脚本及提取的 run 正文。`pnpm test:integration` 只在临时目录复制本 fixture，使用合成 overlays 和五个矩阵输入验证 JSON 传递及本地文件更新，另测 support-portal 更新与不变路径；不能直接执行整个 workflow，也不能执行 git/gh/云平台操作。jq 语义基准为本机 1.8.2，其他安装版本的验证仅算兼容性检查，不代替静态分析器验收。
+`bash -n` 可以检查两个脚本及提取的 run 正文。`pnpm test:integration` 只在临时目录复制本 fixture，使用合成 overlays 和五个矩阵输入验证 JSON 传递及本地文件更新，另测 support-portal 更新/不变，以及 `cloud.yaml` 中不含远程命令的 distinct-ID/setup run 正文及其 JSON env、`GITHUB_OUTPUT/GITHUB_ENV` 单行写入；不能直接执行整个 workflow，也不能执行 git/gh/云平台操作。jq 语义基准为本机 1.8.2，其他安装版本的验证仅算兼容性检查，不代替静态分析器验收。

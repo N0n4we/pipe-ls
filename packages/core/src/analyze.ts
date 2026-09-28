@@ -37,6 +37,8 @@ export interface AnalysisResult {
     readonly filesMayWrite: readonly string[];
     /** Definite writes on every successful run path, not arbitrary file writes. */
     readonly githubEnv: Readonly<Record<string, GithubFileValue>>;
+    /** Names that may be written through GITHUB_ENV on any analyzed path. */
+    readonly githubEnvMayWrite: readonly string[];
     readonly githubOutput: Readonly<Record<string, GithubFileValue>>;
     readonly externalMayRun: readonly string[];
   };
@@ -78,6 +80,8 @@ interface Value {
   readonly min: number;
   readonly max: number;
   readonly encoded: boolean;
+  /** Bash decimal integer bytes even when their exact value is unknown. */
+  readonly integerText?: true;
   readonly singleLine?: boolean;
   /** Whether stdout ends with a separator that keeps a later JSON value distinct. */
   readonly delimited?: boolean;
@@ -119,6 +123,81 @@ const IMAGE_SELECTOR =
   ".images[] | select(.name == strenv(IMAGE_ORIGIN_NAME) or .newName == strenv(IMAGE_REPOSITORY))";
 const PORTAL_IMAGE_SELECTOR =
   'select(.kind == "Deployment" and .metadata.name == "support-portal") | .spec.template.spec.containers[] | select(.name == "support-portal") | .image';
+
+/** An ASCII ERE fragment whose syntax is shared by Bash =~ and JS RegExp. */
+function verifiedBashRegex(pattern: string): boolean {
+  if (pattern.length === 0 || pattern.length > 4096) return false;
+  let depth = 0;
+  let complete = false;
+  let quantifiable = false;
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index];
+    if (character === "[") {
+      const end = pattern.indexOf("]", index + 1);
+      if (end < 0) return false;
+      const contents = pattern.slice(index + 1, end);
+      if (!/^\^?[A-Za-z0-9 .,@:_/-]+$/u.test(contents)) return false;
+      index = end;
+      complete = true;
+      quantifiable = true;
+    } else if (character === "(") {
+      depth++;
+      complete = false;
+      quantifiable = false;
+    } else if (character === ")") {
+      if (depth === 0 || !complete) return false;
+      depth--;
+      complete = true;
+      quantifiable = true;
+    } else if (character === "|") {
+      if (depth === 0 || !complete) return false;
+      complete = false;
+      quantifiable = false;
+    } else if (["*", "+", "?"].includes(character ?? "")) {
+      if (!quantifiable) return false;
+      complete = true;
+      quantifiable = false;
+    } else if (character === "{") {
+      if (!quantifiable) return false;
+      const end = pattern.indexOf("}", index + 1);
+      const bounds =
+        end >= 0
+          ? /^(0|[1-9][0-9]{0,2})(?:,(0|[1-9][0-9]{0,2}))?$/u.exec(
+              pattern.slice(index + 1, end),
+            )
+          : undefined;
+      if (
+        !bounds ||
+        Number(bounds[1]) > 256 ||
+        (bounds[2] !== undefined &&
+          (Number(bounds[2]) > 256 || Number(bounds[2]) < Number(bounds[1])))
+      )
+        return false;
+      index = end;
+      complete = true;
+      quantifiable = false;
+    } else if (character === "^") {
+      if (index !== 0) return false;
+      complete = false;
+      quantifiable = false;
+    } else if (character === "$") {
+      if (index !== pattern.length - 1 || (!complete && index !== 1))
+        return false;
+      complete = true;
+      quantifiable = false;
+    } else if (/^[A-Za-z0-9 .,@:_/-]$/u.test(character ?? "")) {
+      complete = true;
+      quantifiable = true;
+    } else return false;
+  }
+  if (depth !== 0 || !complete) return false;
+  try {
+    new RegExp(pattern, "u");
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const nullType: Template = { kind: "primitive", name: "null" };
 function couldBeString(type: Template): boolean {
@@ -439,6 +518,7 @@ export function analyzeScript(
       effects: {
         filesMayWrite: [],
         githubEnv: {},
+        githubEnvMayWrite: [],
         githubOutput: {},
         externalMayRun: [],
       },
@@ -454,6 +534,14 @@ export function analyzeScript(
     variables.set(name, one(type));
     exported.add(name);
   }
+  // GitHub supplies these on every run. Keep their bytes unknown: runner
+  // paths are neither verified project files nor JSON business inputs.
+  if (options.githubFiles)
+    for (const name of ["HOME", "RUNNER_TEMP"])
+      if (!variables.has(name)) {
+        variables.set(name, one({ kind: "primitive", name: "string" }, false));
+        exported.add(name);
+      }
   let consumed: "no" | "yes" | "maybe" = "no";
   let errexit = false;
   let pipefail = false;
@@ -467,6 +555,7 @@ export function analyzeScript(
   let checkedOutBranch: Value | undefined;
   const provenGitStatusLists = new Set<number>();
   let githubEnv = new Map<string, Value>();
+  const githubEnvMayWrite = new Set<string>();
   let githubOutput = new Map<string, Value>();
   let githubRedirectTarget: "env" | "output" | undefined;
   const verifiedPortalImageWrites = new Set<string>();
@@ -525,6 +614,46 @@ export function analyzeScript(
   function bashValue(node: BashSyntaxNode): Value | undefined {
     if (node.type === "raw_string") return literalBytes(node.text.slice(1, -1));
     if (node.type === "number") return literalBytes(node.text);
+    const lengthName =
+      node.type === "expansion" || node.type === "string"
+        ? /^(?:"\$\{#([A-Za-z_][A-Za-z_0-9]*)\}"|\$\{#([A-Za-z_][A-Za-z_0-9]*)\})$/u.exec(
+            node.text,
+          )
+        : undefined;
+    if (lengthName) {
+      const name = lengthName[1] ?? lengthName[2] ?? "";
+      if (maybeVariables.has(name) || invalidatedVariables.has(name)) {
+        block(`Bash variable ${name} is not verified for length`, spanOf(node));
+        return undefined;
+      }
+      const value = variables.get(name);
+      if (!value) {
+        if (!failedVariables.has(name))
+          block(`Unknown Bash variable ${name}`, spanOf(node));
+        return undefined;
+      }
+      const bytes = finiteBytes(value);
+      if (bytes?.some((item) => item.includes("\0"))) {
+        block("NUL in Bash variable is not analyzed", spanOf(node));
+        return undefined;
+      }
+      if (
+        bytes?.every((item) =>
+          [...item].every((character) => character.charCodeAt(0) < 128),
+        )
+      ) {
+        let result: Value | undefined;
+        for (const item of bytes)
+          result = result
+            ? joinValue(result, literalBytes(String(item.length)))
+            : literalBytes(String(item.length));
+        return result;
+      }
+      return {
+        ...one({ kind: "primitive", name: "number" }),
+        integerText: true,
+      };
+    }
     if (node.type === "arithmetic_expansion") {
       const expression =
         /^\$\(\(\s*([A-Za-z_][A-Za-z_0-9]*)\s*\+\s*1\s*\)\)$/u.exec(node.text);
@@ -1862,6 +1991,10 @@ export function analyzeScript(
   ): Value | undefined {
     const nameNode = node.childForFieldName("name");
     const name = nameNode?.text;
+    const localCommand =
+      name &&
+      (name.startsWith("./") || name.startsWith(".github/")) &&
+      name.endsWith(".sh");
     if (name && functions.has(name)) {
       block(
         `Function ${name} in a pipeline or substitution is not yet analyzed`,
@@ -1880,6 +2013,17 @@ export function analyzeScript(
       block("Command prefix is not yet analyzed", spanOf(node));
       return undefined;
     }
+    if (
+      piped &&
+      name &&
+      ["read", "printf", "yq", "dirname", "date", "set"].includes(name)
+    ) {
+      block(
+        `Pipeline stdin effect for ${name} is not yet analyzed`,
+        spanOf(node),
+      );
+      return undefined;
+    }
     if (name === "read") {
       const source = node.namedChildren.filter(
         (part) => part.type === "herestring_redirect",
@@ -1893,10 +2037,18 @@ export function analyzeScript(
       );
       const separator = ifsValue ? bashValue(ifsValue) : undefined;
       const name = args[2]?.text;
+      const commaSeparated =
+        prefixes.length === 1 &&
+        ifsAssignment?.namedChildren[0]?.text === "IFS" &&
+        separator?.text === ",";
+      const defaultSeparated =
+        prefixes.length === 0 &&
+        !variables.has("IFS") &&
+        !exported.has("IFS") &&
+        !maybeVariables.has("IFS") &&
+        !invalidatedVariables.has("IFS");
       if (
-        prefixes.length !== 1 ||
-        ifsAssignment?.namedChildren[0]?.text !== "IFS" ||
-        separator?.text !== "," ||
+        (!commaSeparated && !defaultSeparated) ||
         args.length !== 3 ||
         args[0]?.text !== "-r" ||
         args[1]?.text !== "-a" ||
@@ -1920,8 +2072,12 @@ export function analyzeScript(
       const texts = finiteBytes(input);
       const bytes = texts?.length === 1 ? texts[0] : undefined;
       if (bytes !== undefined && !/[\n\r\0]/u.test(bytes)) {
-        const fields = bytes.split(",");
-        while (fields.at(-1) === "") fields.pop();
+        const unpadded = bytes.replace(/^[ \t]+|[ \t]+$/gu, "");
+        const fields = commaSeparated
+          ? bytes.split(",")
+          : unpadded.split(/[ \t]+/u);
+        if (commaSeparated) while (fields.at(-1) === "") fields.pop();
+        else if (unpadded === "") fields.length = 0;
         const elements = fields.map(literalBytes);
         arrays.set(name, {
           element: one({ kind: "primitive", name: "string" }, false),
@@ -1937,10 +2093,6 @@ export function analyzeScript(
         });
       return { type: nullType, min: 0, max: 0, encoded: true };
     }
-    const localCommand =
-      name &&
-      (name.startsWith("./") || name.startsWith(".github/")) &&
-      name.endsWith(".sh");
     if (prefixes.length && !localCommand) {
       block(
         "Command-scoped env is only analyzed for local scripts",
@@ -2079,6 +2231,10 @@ export function analyzeScript(
       try {
         const syntax = parseJq(filterSource);
         let channel: Value;
+        if (noInput && supplied) {
+          block("jq -n does not consume supplied stdin", spanOf(node));
+          return undefined;
+        }
         if (noInput) channel = one(nullType);
         else if (supplied) channel = supplied;
         else if (!contract.stdin) {
@@ -3014,6 +3170,48 @@ export function analyzeScript(
     )
       block(`Bash builtin ${name} is not yet analyzed`, spanOf(node));
     else {
+      // Bash expands command arguments even when the command itself has no
+      // model. Inspect direct variable references without evaluating nested
+      // substitutions or trusting the unknown command's effects.
+      const pending = [...args];
+      let visited = 0;
+      while (pending.length && visited++ < 4096) {
+        const part = pending.pop() as BashSyntaxNode;
+        if (
+          part.type === "command_substitution" ||
+          part.type === "arithmetic_expansion"
+        )
+          continue;
+        if (part.type === "simple_expansion" || part.type === "expansion") {
+          const variable = (
+            part.type === "simple_expansion"
+              ? /^\$([A-Za-z_][A-Za-z_0-9]*)$/u
+              : /^\$\{([A-Za-z_][A-Za-z_0-9]*)\}$/u
+          ).exec(part.text)?.[1];
+          if (!variable) continue;
+          if (
+            variables.has(variable) ||
+            arrays.has(variable) ||
+            failedVariables.has(variable)
+          )
+            continue;
+          block(
+            maybeVariables.has(variable)
+              ? `Bash variable ${variable} may be undefined`
+              : invalidatedVariables.has(variable)
+                ? `Bash variable ${variable} has an unverified write`
+                : `Unknown Bash variable ${variable}`,
+            spanOf(part),
+          );
+          continue;
+        }
+        pending.push(...part.namedChildren);
+      }
+      if (pending.length)
+        block(
+          "Unknown command argument inspection budget exceeded",
+          spanOf(node),
+        );
       blocked = true;
       report(
         "PIPE201",
@@ -3034,6 +3232,47 @@ export function analyzeScript(
       block("Guarded pipeline needs proven pipefail", spanOf(node));
       return undefined;
     }
+    // A failed producer does not hide an independently unknown downstream
+    // command. Do not evaluate that command without its stdin: only report a
+    // statically named command for which we have no model at all.
+    const reportUnknownTail = (after: number): void => {
+      const modeled = new Set([
+        "read",
+        "jq",
+        "printf",
+        "yq",
+        "dirname",
+        "date",
+        "set",
+        "git",
+        "gh",
+        "echo",
+        "export",
+        "local",
+        "source",
+        "eval",
+        "cd",
+        "exit",
+        "return",
+      ]);
+      for (const part of node.namedChildren.slice(after + 1)) {
+        if (part.type !== "command") continue;
+        const name = part.childForFieldName("name")?.text;
+        if (
+          !name ||
+          !/^[A-Za-z_][A-Za-z_0-9-]*$/u.test(name) ||
+          modeled.has(name) ||
+          functions.has(name)
+        )
+          continue;
+        report(
+          "PIPE201",
+          `Command ${name} has no contract`,
+          spanOf(part),
+          "blocked",
+        );
+      }
+    };
     let current: Value | undefined;
     for (const [index, part] of node.namedChildren.entries()) {
       if (part.type !== "command") {
@@ -3048,6 +3287,7 @@ export function analyzeScript(
         conditional && index === node.namedChildren.length - 1,
       );
       if (!current) {
+        reportUnknownTail(index);
         const next = node.namedChildren[index + 1];
         if (
           next?.type === "command" &&
@@ -3099,17 +3339,6 @@ export function analyzeScript(
             }
           }
         }
-        return undefined;
-      }
-      if (
-        !current.encoded &&
-        part !== node.namedChildren[node.namedChildren.length - 1]
-      ) {
-        report(
-          "PIPE101",
-          "Pipeline passes non-JSON bytes to the next command",
-          spanOf(part),
-        );
         return undefined;
       }
     }
@@ -3400,6 +3629,45 @@ export function analyzeScript(
       checkedOutBranch: state.checkedOutBranch,
     });
   }
+  function regexTestStatus(
+    left: BashSyntaxNode,
+    right: BashSyntaxNode,
+    at: Span,
+  ): boolean | undefined {
+    const value = bashValue(left);
+    if (!value) return undefined;
+    const fixed =
+      ["regex", "word", "extglob_pattern"].includes(right.type) &&
+      right.namedChildren.length === 0 &&
+      verifiedBashRegex(right.text);
+    const variableName =
+      right.type === "simple_expansion"
+        ? /^\$(?:([A-Za-z_][A-Za-z_0-9]*)|\{([A-Za-z_][A-Za-z_0-9]*)\})$/u.exec(
+            right.text,
+          )
+        : undefined;
+    const name = variableName?.[1] ?? variableName?.[2];
+    const patternValue =
+      name && !maybeVariables.has(name) && !invalidatedVariables.has(name)
+        ? variables.get(name)
+        : undefined;
+    const patterns =
+      patternValue?.min === 1 && patternValue.max === 1
+        ? finiteBytes(patternValue)
+        : undefined;
+    if (
+      !fixed &&
+      (!patterns ||
+        patterns.length === 0 ||
+        patterns.length > 16 ||
+        !patterns.every(verifiedBashRegex))
+    )
+      block("Dynamic Bash regex is not yet analyzed", spanOf(right));
+    else if (finiteBytes(value) !== undefined)
+      block("Finite Bash regex result is not yet analyzed", at);
+    return undefined;
+  }
+
   function testStatus(node: BashSyntaxNode): boolean | undefined {
     if (node.type === "unary_expression") {
       const [operator, operand] = node.namedChildren;
@@ -3448,17 +3716,22 @@ export function analyzeScript(
         : value.text.length > 0;
     }
     if (node.type === "binary_expression") {
-      const [left, right] = node.namedChildren;
+      const [left, middle, last] = node.namedChildren;
+      const explicitOperator =
+        middle?.type === "test_operator" ? middle : undefined;
+      const right = explicitOperator ? last : middle;
       if (!left || !right) {
         block("Bash binary test is incomplete", spanOf(node));
         return undefined;
       }
-      const operator = node.text
-        .slice(
-          left.endIndex - node.startIndex,
-          right.startIndex - node.startIndex,
-        )
-        .trim();
+      const operator = explicitOperator
+        ? explicitOperator.text
+        : node.text
+            .slice(
+              left.endIndex - node.startIndex,
+              right.startIndex - node.startIndex,
+            )
+            .trim();
       if (operator === "&&" || operator === "||") {
         const a = testStatus(left);
         if (
@@ -3475,6 +3748,82 @@ export function analyzeScript(
               : undefined;
         return operator === "&&" ? a && b : a || b;
       }
+      if (
+        operator === "=~" &&
+        !explicitOperator &&
+        node.namedChildren.length === 2 &&
+        left.type === "binary_expression" &&
+        left.namedChildren.length === 2
+      ) {
+        const [first, second] = left.namedChildren;
+        const innerOperator =
+          first && second
+            ? left.text
+                .slice(
+                  first.endIndex - left.startIndex,
+                  second.startIndex - left.startIndex,
+                )
+                .trim()
+            : undefined;
+        // tree-sitter-bash can group `A && B =~ C` as `(A && B) =~ C`.
+        // Bash evaluates the regex first; re-associate only this proven shape.
+        if (first && second && innerOperator === "&&") {
+          const initial = testStatus(first);
+          if (initial === false) return false;
+          const regex = regexTestStatus(second, right, spanOf(node));
+          return initial === true ? regex : regex === false ? false : undefined;
+        }
+      }
+      if (["-le", "-lt", "-ge", "-gt", "-eq", "-ne"].includes(operator)) {
+        if (!explicitOperator || node.namedChildren.length !== 3) {
+          block("Bash numeric test structure is not analyzed", spanOf(node));
+          return undefined;
+        }
+        const a = bashValue(left);
+        const b = bashValue(right);
+        if (!a || !b) return undefined;
+        const lhs = finiteBytes(a);
+        const rhs = finiteBytes(b);
+        const decimal = /^-?(?:0|[1-9][0-9]*)$/u;
+        const valid = (items: readonly string[] | undefined): boolean =>
+          !items ||
+          items.every(
+            (item) => decimal.test(item) && Number.isSafeInteger(Number(item)),
+          );
+        if (
+          !valid(lhs) ||
+          !valid(rhs) ||
+          (!lhs && !a.integerText) ||
+          (!rhs && !b.integerText)
+        ) {
+          block(
+            "Bash numeric test input is not a verified integer",
+            spanOf(node),
+          );
+          return undefined;
+        }
+        if (!lhs || !rhs) return undefined;
+        const outcomes = new Set<boolean>();
+        for (const leftBytes of lhs)
+          for (const rightBytes of rhs) {
+            const x = Number(leftBytes);
+            const y = Number(rightBytes);
+            outcomes.add(
+              operator === "-le"
+                ? x <= y
+                : operator === "-lt"
+                  ? x < y
+                  : operator === "-ge"
+                    ? x >= y
+                    : operator === "-gt"
+                      ? x > y
+                      : operator === "-eq"
+                        ? x === y
+                        : x !== y,
+            );
+          }
+        return outcomes.size === 1 ? outcomes.has(true) : undefined;
+      }
       if (!["==", "=", "!=", "=~"].includes(operator)) {
         block(
           `Bash test operator ${operator} is not yet analyzed`,
@@ -3482,18 +3831,9 @@ export function analyzeScript(
         );
         return undefined;
       }
+      if (operator === "=~") return regexTestStatus(left, right, spanOf(node));
       const a = bashValue(left);
       if (!a) return undefined;
-      if (operator === "=~") {
-        if (
-          !["regex", "word", "extglob_pattern"].includes(right.type) ||
-          right.namedChildren.length > 0
-        )
-          block("Dynamic Bash regex is not yet analyzed", spanOf(right));
-        else if (a.text !== undefined)
-          block("Finite Bash regex result is not yet analyzed", spanOf(node));
-        return undefined;
-      }
       const staticPattern =
         ["word", "extglob_pattern"].includes(right.type) &&
         right.namedChildren.length === 0;
@@ -3809,17 +4149,6 @@ export function analyzeScript(
     });
   }
 
-  function hasRegexTest(node: BashSyntaxNode): boolean {
-    const pending = [node];
-    let visited = 0;
-    while (pending.length && visited++ < 128) {
-      const current = pending.pop() as BashSyntaxNode;
-      if (current.type === "regex") return true;
-      pending.push(...current.namedChildren);
-    }
-    return false;
-  }
-
   function visitList(node: BashSyntaxNode): void {
     const [left, right] = node.namedChildren;
     if (!left || !right || node.namedChildren.length !== 2) {
@@ -3875,12 +4204,9 @@ export function analyzeScript(
     if (
       operator === "||" &&
       fatalRight &&
-      (left.type === "test_command" || left.type === "negated_command") &&
-      hasRegexTest(left)
+      (left.type === "test_command" || left.type === "negated_command")
     ) {
-      const beforeCondition = diagnostics.length;
       const status = conditionStatus(left);
-      if (diagnostics.length !== beforeCondition) return;
       if (status === false) dead = true;
       return;
     }
@@ -4482,6 +4808,14 @@ export function analyzeScript(
       block("GitHub file write is not a proven single-line name=value", span);
       return;
     }
+    if (
+      githubRedirectTarget === "env" &&
+      (/^(?:GITHUB_|RUNNER_)/u.test(name) || name === "NODE_OPTIONS")
+    ) {
+      block(`GitHub env ${name} cannot be set through GITHUB_ENV`, span);
+      return;
+    }
+    if (githubRedirectTarget === "env") githubEnvMayWrite.add(name);
     (githubRedirectTarget === "env" ? githubEnv : githubOutput).set(
       name,
       payload,
@@ -4525,6 +4859,7 @@ export function analyzeScript(
       );
       return;
     }
+    const entries = new Map<string, Value>();
     for (const line of source.split("\n")) {
       if (/^[ \t]*(?:#|$)/u.test(line)) continue;
       const assignment = /^([A-Za-z_][A-Za-z_0-9]*)=(.*)$/u.exec(line);
@@ -4535,7 +4870,19 @@ export function analyzeScript(
         );
         return;
       }
-      githubEnv.set(assignment[1] as string, literalBytes(assignment[2] ?? ""));
+      const name = assignment[1] as string;
+      if (/^(?:GITHUB_|RUNNER_)/u.test(name) || name === "NODE_OPTIONS") {
+        block(
+          `GitHub env ${name} cannot be set through GITHUB_ENV`,
+          spanOf(path),
+        );
+        return;
+      }
+      entries.set(name, literalBytes(assignment[2] ?? ""));
+    }
+    for (const [name, value] of entries) {
+      githubEnvMayWrite.add(name);
+      githubEnv.set(name, value);
     }
   }
 
@@ -4991,6 +5338,7 @@ export function analyzeScript(
     effects: {
       filesMayWrite: [...filesMayWrite].sort(),
       githubEnv: complete ? githubValues(githubEnv) : {},
+      githubEnvMayWrite: [...githubEnvMayWrite].sort(),
       githubOutput: complete ? githubValues(githubOutput) : {},
       externalMayRun: [...externalMayRun].sort(),
     },

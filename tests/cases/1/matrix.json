@@ -189,6 +189,20 @@
       ]
     },
     {
+      "id": "missing-reusable-secret",
+      "kind": "negative",
+      "entry": ".github/workflows/cloud.yaml",
+      "mutation": {
+        "target": ".github/workflows/cloud.yaml",
+        "search": "    secrets: inherit\n\n  restart_huaweicloud:",
+        "replace": "\n  restart_huaweicloud:"
+      },
+      "expectedCodes": ["PIPE104"],
+      "expectedFacts": [
+        "restart_aws must supply the callee's required secret even when unrelated workflow analysis is blocked"
+      ]
+    },
+    {
       "id": "consume-ci-without-workflow-output",
       "kind": "negative",
       "entry": ".github/workflows/cloud.yaml",

@@ -1,5 +1,7 @@
 import {
+  chmodSync,
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -10,11 +12,57 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { MAX_WORKFLOW_YAML_DEPTH } from "@pipe-ls/hosts";
 import { MAX_SOURCE_BYTES } from "@pipe-ls/workspace";
 import { describe, expect, it } from "vitest";
 import { checkPaths, runCli } from "../src/index.js";
 
 describe("CLI static check", () => {
+  it("never executes a project script while producing diagnostics", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-no-execution-"));
+    try {
+      const folder = join(root, ".github", "scripts");
+      mkdirSync(folder, { recursive: true });
+      const script = join(folder, "side-effect.sh");
+      const marker = join(root, "EXECUTED");
+      writeFileSync(
+        script,
+        `#!/usr/bin/env bash\nprintf 'executed\\n' > "${marker}"\n`,
+      );
+      chmodSync(script, 0o755);
+      const report = await checkPaths([script]);
+      expect(report.complete).toBe(false);
+      expect(report.diagnostics.length).toBeGreaterThan(0);
+      expect(existsSync(marker)).toBe(false);
+      const output: string[] = [];
+      expect(
+        await runCli(["check", "--json", script], (part) => output.push(part)),
+      ).toBe(1);
+      expect(JSON.parse(output.join("")).complete).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves safe discovery errors with exit code 2", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-cli-discovery-"));
+    try {
+      const missing = join(root, "missing.sh");
+      const errors: string[] = [];
+      expect(
+        await runCli(
+          ["check", missing],
+          () => {},
+          (part) => errors.push(part),
+        ),
+      ).toBe(2);
+      expect(errors.join("")).toContain("Entry is not readable");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not treat the incomplete case 1 fixture as a passing product check", async () => {
     const root = fileURLToPath(
       new URL("../../../tests/cases/1/", import.meta.url),
@@ -216,6 +264,91 @@ jq -n '"wrong"'
     }
   });
 
+  it("keeps malformed YAML source text out of both CLI output formats", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-yaml-secret-"));
+    try {
+      const folder = join(root, ".github", "workflows");
+      mkdirSync(folder, { recursive: true });
+      const path = join(folder, "bad.yaml");
+      const secret = "SECRET_MARKER_MUST_NOT_LEAK";
+      writeFileSync(
+        path,
+        `jobs:\n  test:\n    steps:\n      - run: [${secret}\n`,
+      );
+      const report = await checkPaths([path]);
+      expect(report.complete).toBe(false);
+      expect(report.diagnostics[0]?.code).toBe("PIPE001");
+      expect(JSON.stringify(report)).not.toContain(secret);
+      for (const mode of [[], ["--json"]]) {
+        const output: string[] = [];
+        expect(
+          await runCli(["check", ...mode, path], (part) => output.push(part)),
+        ).toBe(1);
+        expect(output.join("")).not.toContain(secret);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps malformed script contract and jq tokens out of CLI diagnostics", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-script-secret-"));
+    try {
+      const folder = join(root, ".github", "scripts");
+      mkdirSync(folder, { recursive: true });
+      const path = join(folder, "bad.sh");
+      const secret = "SECRET_MARKER_MUST_NOT_LEAK";
+      writeFileSync(
+        path,
+        `#!/usr/bin/env bash\n# @pipe stdin: {"${secret}": number, "${secret}": string}\njq -n '"ok" ${secret}'\n`,
+      );
+      const report = await checkPaths([path]);
+      expect(report.complete).toBe(false);
+      expect(report.diagnostics.map((item) => item.code)).toContain("PIPE104");
+      expect(report.diagnostics.map((item) => item.code)).toContain("PIPE001");
+      expect(JSON.stringify(report)).not.toContain(secret);
+      for (const mode of [[], ["--json"]]) {
+        const output: string[] = [];
+        expect(
+          await runCli(["check", ...mode, path], (part) => output.push(part)),
+        ).toBe(1);
+        expect(output.join("")).not.toContain(secret);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks a budgeted YAML workflow instead of checking its otherwise valid run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-yaml-budget-"));
+    try {
+      const folder = join(root, ".github", "workflows");
+      mkdirSync(folder, { recursive: true });
+      const path = join(folder, "deep.yaml");
+      const nested = Array.from(
+        { length: MAX_WORKFLOW_YAML_DEPTH + 2 },
+        (_, index) => `${"  ".repeat(index + 1)}child:\n`,
+      ).join("");
+      writeFileSync(
+        path,
+        `jobs:\n  test:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: bash\n    steps:\n      - run: jq -n '42'\nspare:\n${nested}${"  ".repeat(MAX_WORKFLOW_YAML_DEPTH + 3)}end: value\n`,
+      );
+      const report = await checkPaths([path]);
+      expect(report.complete).toBe(false);
+      expect(
+        report.diagnostics.map((item) => [item.code, item.status]),
+      ).toEqual([["PIPE203", "blocked"]]);
+      expect(report.diagnostics[0]?.message).toContain("YAML depth budget");
+      const output: string[] = [];
+      expect(
+        await runCli(["check", "--json", path], (text) => output.push(text)),
+      ).toBe(1);
+      expect(JSON.parse(output.join("")).complete).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("maps run diagnostics to YAML and reports absent local workflows", async () => {
     const root = mkdtempSync(join(tmpdir(), "pipe-ls-workflow-"));
     try {
@@ -318,6 +451,79 @@ jq -n '"wrong"'
           (d) => d.code === "PIPE203",
         ),
       ).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects omitted or undeclared reusable workflow secrets", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-reusable-secrets-"));
+    try {
+      const workflows = join(root, ".github", "workflows");
+      mkdirSync(workflows, { recursive: true });
+      const callee = join(workflows, "callee.yml");
+      const caller = join(workflows, "caller.yml");
+      writeFileSync(
+        callee,
+        `on:
+  workflow_call:
+    secrets:
+      TOKEN:
+        required: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: set -euo pipefail
+`,
+      );
+      const check = async (secrets: string) => {
+        writeFileSync(
+          caller,
+          `jobs:\n  call:\n    uses: ./.github/workflows/callee.yml\n${secrets}`,
+        );
+        return checkPaths([caller]);
+      };
+      const missing = await check("");
+      expect(missing.complete).toBe(false);
+      expect(
+        missing.diagnostics.some(
+          (issue) =>
+            issue.code === "PIPE104" &&
+            issue.message.includes("requires secret TOKEN"),
+        ),
+      ).toBe(true);
+      const supplied = await check(
+        `    secrets:\n      TOKEN: \${{ secrets.PRIVATE_TOKEN }}\n`,
+      );
+      expect(supplied.complete).toBe(true);
+      expect(supplied.diagnostics).toEqual([]);
+      expect(JSON.stringify(supplied)).not.toContain("PRIVATE_TOKEN");
+      const inherited = await check("    secrets: inherit\n");
+      expect(inherited.complete).toBe(true);
+      const wrong = await check(
+        `    secrets:\n      OTHER: \${{ secrets.PRIVATE_TOKEN }}\n`,
+      );
+      expect(wrong.complete).toBe(false);
+      expect(wrong.diagnostics.map((issue) => issue.code)).toContain("PIPE104");
+      expect(
+        wrong.diagnostics.some((issue) =>
+          issue.message.includes("has no secret OTHER"),
+        ),
+      ).toBe(true);
+      const unverified = await check("    secrets: unknown\n");
+      expect(unverified.complete).toBe(false);
+      expect(unverified.diagnostics.map((issue) => issue.code)).toContain(
+        "PIPE203",
+      );
+      expect(
+        unverified.diagnostics.some((issue) =>
+          issue.message.includes("requires secret TOKEN"),
+        ),
+      ).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -441,6 +647,97 @@ jobs:
       const raw = await checkPaths([caller]);
       expect(raw.complete).toBe(false);
       expect(raw.diagnostics.map((d) => d.code)).toContain("PIPE101");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps independent callee file diagnostics when a caller input wire is unverified", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-partial-callee-"));
+    try {
+      const workflows = join(root, ".github", "workflows");
+      mkdirSync(workflows, { recursive: true });
+      writeFileSync(
+        join(workflows, "callee.yml"),
+        `on:
+  workflow_call:
+    inputs:
+      name:
+        type: string
+        required: true
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: sed -E '/^[[:space:]]*(#|$)/d' .github/pins.env >> "$GITHUB_ENV"
+      - env:
+          NAME_JSON: \${{ inputs.name }}
+        run: |
+          # @pipe env NAME_JSON: string
+          jq -c '.' <<< "$NAME_JSON"
+`,
+      );
+      const caller = join(workflows, "caller.yml");
+      const report = async (binding: string) => {
+        writeFileSync(
+          caller,
+          `jobs:\n  decode:\n    uses: ./.github/workflows/callee.yml\n    with:\n      name: ${binding}\n`,
+        );
+        return checkPaths([caller]);
+      };
+      const unknown = await report("$" + "{{ github.event.issue.title }}");
+      expect(unknown.complete).toBe(false);
+      expect(
+        unknown.diagnostics.some(
+          (item) =>
+            item.code === "PIPE204" && item.message.includes("pins.env"),
+        ),
+      ).toBe(true);
+      expect(
+        unknown.diagnostics.some((item) =>
+          item.message.includes("env NAME_JSON injection is not verified"),
+        ),
+      ).toBe(true);
+      expect(unknown.diagnostics.map((item) => item.code)).not.toContain(
+        "PIPE101",
+      );
+      expect(unknown.unverifiedDependencies).toContain(
+        pathToFileURL(join(realpathSync(root), ".github", "pins.env")).href,
+      );
+      const raw = await report("Alice");
+      expect(raw.diagnostics.map((item) => item.code)).toContain("PIPE101");
+      expect(raw.diagnostics.map((item) => item.code)).toContain("PIPE204");
+      writeFileSync(
+        caller,
+        `jobs:
+  first:
+    uses: ./.github/workflows/callee.yml
+    with:
+      name: \${{ github.event.issue.title }}
+  second:
+    uses: ./.github/workflows/callee.yml
+    with:
+      name: \${{ github.event.issue.title }}
+`,
+      );
+      const repeated = await checkPaths([caller]);
+      expect(
+        repeated.diagnostics.filter(
+          (item) =>
+            item.code === "PIPE204" && item.message.includes("pins.env"),
+        ),
+      ).toHaveLength(1);
+      expect(
+        repeated.diagnostics.filter((item) =>
+          item.message.includes(
+            "Reusable workflow contract is not yet verified",
+          ),
+        ),
+      ).toHaveLength(2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -599,6 +896,66 @@ ${extra}`;
     }
   });
 
+  it("checks retry action Bash text without trusting its execution or environment writes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-retry-command-"));
+    try {
+      const path = join(root, ".github", "workflows", "retry.yml");
+      mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+      const source = `jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: nick-fields/retry@v3
+        with:
+          shell: bash
+          max_attempts: 3
+          command: |
+            unknown-business-command
+            printf 'NAME=%s\\n' '"Alice"' >> "$GITHUB_ENV"
+      - run: |
+          # @pipe env NAME: string
+          jq -c '.' <<< "$NAME"
+`;
+      writeFileSync(path, source);
+      const report = await checkPaths([path]);
+      expect(report.complete).toBe(false);
+      const command = report.diagnostics.find((item) =>
+        item.message.includes(
+          "Command unknown-business-command has no contract",
+        ),
+      );
+      expect(command?.code).toBe("PIPE201");
+      expect(command?.range.start.line).toBe(
+        source.slice(0, source.indexOf("unknown-business-command")).split("\n")
+          .length - 1,
+      );
+      expect(
+        report.diagnostics.some((item) =>
+          item.message.includes("env NAME has no statically proven injection"),
+        ),
+      ).toBe(true);
+      expect(report.externalEffects).not.toContain("unknown-business-command");
+      writeFileSync(
+        path,
+        source.replace(
+          "unknown-business-command",
+          "echo $" + "{{ inputs.script }}",
+        ),
+      );
+      const dynamic = await checkPaths([path]);
+      expect(
+        dynamic.diagnostics.some((item) =>
+          item.message.includes("Opaque action command contains"),
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("propagates only verified GITHUB_ENV writes to later steps in the same job", async () => {
     const root = mkdtempSync(join(tmpdir(), "pipe-ls-github-env-flow-"));
     try {
@@ -688,6 +1045,223 @@ printf 'NAME=%s\\n' "$(jq -cn --arg value "$INPUT" '$value')" >> "$GITHUB_ENV"`)
           d.message.includes("precedence is not yet analyzed"),
         ),
       ).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not trust protected GITHUB_ENV names or partial env-file writes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-protected-github-env-"));
+    try {
+      const workflow = join(root, ".github", "workflows", "flow.yml");
+      const pins = join(root, ".github", "pins.env");
+      mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+      const source = (writer: string, name: string) => `jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - run: ${writer}
+      - run: |
+          # @pipe env ${name}: string
+          jq -c '.' <<< "$${name}"
+`;
+      writeFileSync(
+        workflow,
+        source(
+          `printf 'NODE_OPTIONS=%s\\n' '"spoofed"' >> "$GITHUB_ENV"`,
+          "NODE_OPTIONS",
+        ),
+      );
+      const direct = await checkPaths([workflow]);
+      expect(direct.complete).toBe(false);
+      expect(
+        direct.diagnostics.some((issue) =>
+          issue.message.includes(
+            "NODE_OPTIONS cannot be set through GITHUB_ENV",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        direct.diagnostics.some((issue) =>
+          issue.message.includes("no statically proven injection"),
+        ),
+      ).toBe(true);
+      writeFileSync(pins, 'NAME="Alice"\nNODE_OPTIONS=SECRET_MARKER\n');
+      writeFileSync(
+        workflow,
+        source(
+          `sed -E '/^[[:space:]]*(#|$)/d' .github/pins.env >> "$GITHUB_ENV"`,
+          "NAME",
+        ),
+      );
+      const filtered = await checkPaths([workflow]);
+      expect(filtered.complete).toBe(false);
+      expect(
+        filtered.diagnostics.some((issue) =>
+          issue.message.includes(
+            "NODE_OPTIONS cannot be set through GITHUB_ENV",
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        filtered.diagnostics.some((issue) =>
+          issue.message.includes(
+            "GitHub env NAME has no statically proven injection",
+          ),
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(filtered)).not.toContain("SECRET_MARKER");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reuse an env fact across a conditional overwrite", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-conditional-env-"));
+    try {
+      const workflows = join(root, ".github", "workflows");
+      mkdirSync(workflows, { recursive: true });
+      const body = `    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: printf 'NAME=%s\\n' '"A"' >> "$GITHUB_ENV"
+      - if: inputs.enabled == 'yes'
+        run: printf 'NAME=%s\\n' '"B"' >> "$GITHUB_ENV"
+      - run: |
+          # @pipe env NAME: "A"
+          jq -c '.' <<< "$NAME"
+`;
+      const ordinary = join(workflows, "ordinary.yml");
+      writeFileSync(
+        ordinary,
+        `on:
+  workflow_dispatch:
+    inputs:
+      enabled:
+        type: string
+jobs:
+  test:
+${body}`,
+      );
+      const direct = await checkPaths([ordinary]);
+      expect(direct.complete).toBe(false);
+      expect(
+        direct.diagnostics.some((issue) =>
+          issue.message.includes(
+            "GitHub env NAME has no statically proven injection",
+          ),
+        ),
+      ).toBe(true);
+      writeFileSync(
+        ordinary,
+        `on:
+  workflow_dispatch:
+    inputs:
+      enabled:
+        type: string
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: printf 'NAME=%s\\n' '"A"' >> "$GITHUB_ENV"
+      - env:
+          FLAG_JSON: \${{ toJSON(inputs.enabled) }}
+        run: |
+          # @pipe env FLAG_JSON: string
+          flag="$(jq -er '.' <<< "$FLAG_JSON")"
+          if [[ "$flag" == yes ]]; then printf 'NAME=%s\\n' '"B"' >> "$GITHUB_ENV"; fi
+      - run: |
+          # @pipe env NAME: "A"
+          jq -c '.' <<< "$NAME"
+`,
+      );
+      const internal = await checkPaths([ordinary]);
+      expect(internal.complete).toBe(false);
+      expect(
+        internal.diagnostics.some((issue) =>
+          issue.message.includes(
+            "GitHub env NAME has no statically proven injection",
+          ),
+        ),
+      ).toBe(true);
+      const callee = join(workflows, "callee.yml");
+      writeFileSync(
+        callee,
+        `on:
+  workflow_call:
+    inputs:
+      enabled:
+        type: string
+        required: true
+jobs:
+  test:
+${body}`,
+      );
+      const caller = join(workflows, "caller.yml");
+      writeFileSync(
+        caller,
+        "jobs:\n  call:\n    uses: ./.github/workflows/callee.yml\n    with:\n      enabled: yes\n",
+      );
+      const called = await checkPaths([caller]);
+      expect(called.complete).toBe(false);
+      expect(
+        called.diagnostics.some((issue) =>
+          issue.message.includes(
+            "Reusable workflow env NAME injection is not verified",
+          ),
+        ),
+      ).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates prior GITHUB_ENV facts across an opaque action step", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pipe-ls-action-env-barrier-"));
+    try {
+      const workflow = join(root, ".github", "workflows", "flow.yml");
+      mkdirSync(join(root, ".github", "workflows"), { recursive: true });
+      const source = (actionBeforeWrite: boolean) => `jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+${actionBeforeWrite ? "      - uses: third-party/action@v1\n" : ""}      - run: printf 'NAME=%s\\n' '"Alice"' >> "$GITHUB_ENV"
+${actionBeforeWrite ? "" : "      - uses: third-party/action@v1\n"}      - run: |
+          # @pipe env NAME: string
+          jq -c '.' <<< "$NAME"
+`;
+      writeFileSync(workflow, source(false));
+      const after = await checkPaths([workflow]);
+      expect(after.complete).toBe(false);
+      expect(
+        after.diagnostics.some((issue) =>
+          issue.message.includes(
+            "GitHub env NAME has no statically proven injection",
+          ),
+        ),
+      ).toBe(true);
+      writeFileSync(workflow, source(true));
+      const before = await checkPaths([workflow]);
+      expect(before.complete).toBe(false);
+      expect(
+        before.diagnostics.some((issue) =>
+          issue.message.includes(
+            "GitHub env NAME has no statically proven injection",
+          ),
+        ),
+      ).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

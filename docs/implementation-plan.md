@@ -1,8 +1,10 @@
 # 实施与验证计划
 
-当前已建立 pnpm workspace、TypeScript strict、Vitest、lint 与构建入口，并提供 UTF-16 Span、解析/源码映射、JSON 模板/头部 parser、保守语义检查及只读 CLI。case 1 的 23 个矩阵场景已有可执行诊断或受控运行时测试；合成 overlays 和本地 reusable workflow stub 下，完整 `cloud.yaml` 静态检查通过。P0/P1 有可用纵向切片，P2 仍未完成正式验收：原 fixture 的业务 overlays 尚缺失；真实被调 workflow 已收录，但华为 CLI 版本文件缺失，其动作、runner、云命令和滚动更新效果仍未完成静态验证。git/gh 只识别固定命令族及少量参数关系，未证明动态参数/完整副作用；更广泛的性能验证仍待完成。四个运行时包已以 `@pipe-ls/*@0.1.0` 在 npm 公开发布，采用 MIT 许可证；CLI tarball 的第三方许可证清单、空缓存离线安装及匿名注册表安装冒烟均已通过。解析路线的实测结果与剩余缺口见[验证记录](parser-prototype.md)。按纵向可用功能交付，不以空目录/接口数量代替完成。
+当前已建立 pnpm workspace、TypeScript strict、Vitest、lint 与构建入口，并提供 UTF-16 Span、解析/源码映射、JSON 模板/头部 parser、保守语义检查及只读 CLI。case 1 的 24 个矩阵场景已有可执行诊断或受控运行时测试；合成 overlays 和本地 reusable workflow stub 下，完整 `cloud.yaml` 静态检查通过。P0/P1 有可用纵向切片，P2 仍未完成正式验收：真实被调 workflow 的动作、runner、云命令和滚动更新效果仍未完成静态验证；git/gh 只识别固定命令族及少量参数关系，未证明动态参数/完整副作用；更广泛的性能验证仍待完成。原 fixture 缺少业务 overlays 和华为 CLI 版本文件时，应准确报告 `PIPE204` 并继续分析独立部分；这些生产资料及真实下载 URL/SHA-256 不是首版 CLI 的补齐前提。四个运行时包已以 `@pipe-ls/*@0.1.0` 在 npm 公开发布，采用 MIT 许可证；CLI tarball 的第三方许可证清单、空缓存离线安装及匿名注册表安装冒烟均已通过。解析路线的实测结果与剩余缺口见[验证记录](parser-prototype.md)。按纵向可用功能交付，不以空目录/接口数量代替完成。
 
-当前分析切片覆盖有限 Bash 赋值/export/管道/命令替换、本地多层脚本契约调用、if/case/&&/|| 分支状态合并、有限 read 数组与 for 固定点、固定 TSV 和 `jq -c '.field[]'` JSON-lines 来源的 while/read 固定点，以及已证实的非零退出路径；仅对已验证的目录/文件路径做只读依赖检查，部分 yq 更新可给出 may-write 摘要，一般 while、函数和文件效果仍未完成。另覆盖部分静态 jq 字段、集合、内建函数、短路条件、链式 `as` 和 reduce 固定点；GitHub run 的 env 注入、单行 `GITHUB_ENV/GITHUB_OUTPUT` 效果、同 job 后续 step 环境传递、显式 job output 生产者映射、有限 `needs`/`if` 与跨 job 数据流、本地 reusable workflow 输入声明和源码映射已有检查。workspace 提供按文件只读快照、依赖边、单文件 1 MiB、发现过程 10,000 项/64 层预算；模板声明另限 65,536 UTF-16 code units、4,096 节点、128 层，但完整依赖失效尚未实现。范围外必须阻断检查，不能当作首版支持。首版范围为 CLI + Bash/GitHub Actions，覆盖 [case 1](../tests/cases/1/README.md) 的语法和数据流；仅以 `.github` 目录判定项目根，不读取项目级分析配置，暂不实现 LSP 适配。
+当前分析切片覆盖有限 Bash 赋值/export/管道/命令替换、本地多层脚本契约调用、if/case/&&/|| 分支状态合并、有限 read 数组与 for 固定点、固定 TSV 和 `jq -c '.field[]'` JSON-lines 来源的 while/read 固定点，以及已证实的非零退出路径；仅对已验证的目录/文件路径做只读依赖检查，部分 yq 更新可给出 may-write 摘要，一般 while、函数和文件效果仍未完成。另覆盖部分静态 jq 字段、集合、内建函数、短路条件、链式 `as` 和 reduce 固定点；GitHub run 的 env 注入、单行 `GITHUB_ENV/GITHUB_OUTPUT` 效果、同 job 后续 step 环境传递、显式 job output 生产者映射、有限 `needs`/`if` 与跨 job 数据流、本地 reusable workflow 输入声明和源码映射已有检查。`GITHUB_ENV` 的受保护变量不当作有效写入；同 job 的条件或分支写入只撤销对应的已知环境事实，分析不完整时撤销全部。workspace 提供按文件只读快照、依赖边、反向依赖影响闭包及不修改旧视图的派生快照、单文件 1 MiB、发现过程 10,000 项/64 层预算；GitHub YAML AST 另限 10,000 节点、128 层和 128 个 alias，解析异常及超限阻断检查；模板声明另限 65,536 UTF-16 code units、4,096 节点、128 层。CLI 每次检查重新建立快照，不提供文件监听或跨进程增量缓存。范围外必须阻断检查，不能当作首版支持。首版范围为 CLI + Bash/GitHub Actions，覆盖 [case 1](../tests/cases/1/README.md) 的语法和数据流；仅以 `.github` 目录判定项目根，不读取项目级分析配置，暂不实现 LSP 适配。
+
+未知第三方 `uses` step 被视为同 job 的环境效果屏障：后续 run 不再沿用屏障前的 `GITHUB_ENV` 事实；屏障后的已验证写入可以重新建立事实。此屏障不构成对 action 本身输出或文件副作用的验证。
 
 ## 1. 交付顺序
 
@@ -26,7 +28,7 @@
 ### P2：GitHub Actions + case 1 CLI 闭环（首版 MVP）
 
 - GitHub Actions Bash run、上下文优先级、step 隔离、YAML 完整位置映射、模板边界及常用 JSON 注入转换。
-- case 1 的 `GITHUB_OUTPUT/GITHUB_ENV`、跨 step/job 数据流、toJSON/fromJSON/join、needs/if/result/skipped 条件依赖，以及本地 reusable workflow 输入和显式输出映射。无返回 CI 合法，但调用方不能消费不存在的 output。
+- case 1 的 `GITHUB_OUTPUT/GITHUB_ENV`、跨 step/job 数据流、toJSON/fromJSON/join、needs/if/result/skipped 条件依赖，以及本地 reusable workflow 输入、必需 secret 绑定和显式输出映射。无返回 CI 合法，但调用方不能消费不存在的 output。
 - CLI 多项目入口、只读依赖快照、反向依赖失效、预算和宿主诊断聚合；不实现 LSP 服务或编辑器客户端。
 
 验收：在补齐受控业务文件及被调 workflow 的 fixture 中验证完整调用链；当前 case 保留的缺失依赖应准确诊断，而不是因为缺少文件跳过所有脚本分析。该 case 列出的语法不再仅因首版子集太小而全部受阻；数据或效果无法证明时仍明确报告原因。反例覆盖 JSON 重复编码、漏编码、读取不存在的返回接口、条件缺失及跨项目访问。CLI 报告使用原文件位置，不执行业务命令或访问远程。
@@ -80,18 +82,20 @@
 | `jq -n --argjson v '1 2' '$v'` | 解码失败 |
 | 输入 `{"name":"Alice"}`，`jq -r '.name'` | `Alice` + LF，不是 JSON string 编码 |
 
-性质测试生成符合模板的 JSON 小值，检查实际结果落在推导的结构/数量范围内，失败缩减为 fixture。有限样本不代替证明；未完成分析的情况不能纳入通过统计。
+现有有界差分测试以固定种子为 case 1 的 reduce 去重、数组投影、条件分支及目标唯一性四种 filter 各生成 32 份符合输入模板的 JSON 小值，对照本机 jq 1.8.2 检查单份输出落在静态推导类型内，并用错误 stdout 模板反例确认分析器不会一概放行。后续仍需扩大语法/失败路径样本并把失败缩减为独立 fixture；有限样本不代替证明，未完成分析的情况不能纳入通过统计。
 
 ## 4. 完成标准
 
-已有工程验证入口：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm test:integration`、`pnpm build`、`pnpm test:package`。单测覆盖基础模型、解析/映射、case 1 矩阵诊断；集成测试只运行临时目录中的五个正例 parse/update 输入及 support-portal 更新/不变回归。这些测试尚不代表真实原 fixture 通过或首版产品验收完成。
+已有工程验证入口：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm test:integration`、`pnpm build`、`pnpm test:package`、`pnpm bench:case1`。单测覆盖基础模型、解析/映射、case 1 矩阵诊断；集成测试在临时目录运行五个正例 parse/update 输入、support-portal 更新/不变回归，以及真实 `cloud.yaml` 中仅涉及本地 jq/脚本的 distinct-ID 与 setup run 正文，检查特殊字符和 GitHub 单行文件写入。这些测试尚不代表真实原 fixture 通过或首版产品验收完成。
 
 临时 tarball 已将四个运行时包与三项固定版本依赖在**空 pnpm store** 的独立目录离线安装、加载 WASM 并执行 check；检查依赖链接不回到源码仓库、各运行时包携带项目 MIT 许可证，以及 CLI 包内第三方许可证清单与实际安装的许可证原文一致。`pnpm pack:offline` 可将同一 bundle 持久写入 `release/offline-0.1.0/`，包含七个 tarball、SHA-256 清单和已通过安装冒烟的说明，拒绝覆盖已有目录。依赖 tarball 从已安装包的临时副本打包，去掉生命周期脚本；四个运行时包已作为 public `@pipe-ls/*@0.1.0` 发布，并通过无凭据、全新 pnpm store 的注册表安装及 CLI 冒烟。LSP 启停验证留到适配器实现后。初始性能目标为 100KB 文档暖分析 p95 < 200ms、100 个典型 unit 冷 CLI < 5s；记录机器/版本/fixture hash 和峰值内存，不能把简单样本当成全域保证。
 
-首版 MVP 完成须同时满足：case 1 覆盖矩阵及支持范围内正例/反例/受阻例稳定；CLI 闭环可用；`.github` 根发现且不读取项目级配置；无返回接口语义正确；不完整检查不返回通过；分析时不执行用户代码、不访问远程资源、不泄露敏感数据；README 只描述真实已实现能力。LSP/编辑闭环不是首版验收条件。
+首版 MVP 完成须同时满足：case 1 覆盖矩阵及支持范围内正例/反例/受阻例稳定；CLI 闭环可用；`.github` 根发现且不读取项目级配置；无返回接口语义正确；不完整检查不返回通过；分析时不执行用户代码、不访问远程资源、不泄露敏感数据；README 只描述真实已实现能力。现有负例已验证畸形 YAML、模板和 jq token 不进入 CLI 文字/JSON 诊断，YAML EOF 错误范围不越界；带本地写盘副作用的可执行脚本在 `checkPaths` 和 CLI 检查时也没有被执行。意外内部异常只返回通用错误，不回显异常消息。LSP/编辑闭环不是首版验收条件。
 
 一次受控性能抽样（Apple M1 / macOS arm64 / Node 22.23.1）：102,429 字节的单 Bash 文档（仅注释填充与一个 `jq -n`，SHA-256 `4f13640df681551623ea1587695583f635f370168422b57d2dbbe4110fbcae52`）预热 3 次后测 20 次，p95 为 22.54 ms，父进程峰值 RSS 约 274 MiB；100 个相同简单 unit（单文件 SHA-256 `0d9648f737d8deff52cc84d7afe3a8a190c88ff356ac90bedde44f814bbf06d6`）冷 CLI 为 381 ms，子进程峰值 RSS 约 99 MiB。仅是合成样本，不代表“100 个典型 unit”或真实 case 1 的性能验收；第二次分析曾出现约 300 ms 的一次性 JIT/初始化尖峰，需扩大样本并稳定预热方案。
 
-再以 100 份 case 1 `parse-cloud-images.sh` 副本和一份共享 allowlist 测冷 CLI（同机、同 Node；脚本 SHA-256 `d01d1c52cc9a83656db3f08e2f9a2c857ae090a7ed3822661b30c72f38a54ba0`，4,238 字节）：100 unit 全部静态通过、零诊断，耗时约 2.05 s，峰值 RSS 约 253 MiB。该样本覆盖目标脚本的真实解析/语义路径，但未覆盖 100 个混合 workflow/update unit，不能外推为所有项目的 5 s 保证。
+再以 100 份 case 1 `parse-cloud-images.sh` 副本和一份共享 allowlist 测冷 CLI（同机、同 Node；脚本 SHA-256 `d01d1c52cc9a83656db3f08e2f9a2c857ae090a7ed3822661b30c72f38a54ba0`，4,238 字节）：100 unit 全部静态通过、零诊断，耗时约 2.05 s，峰值 RSS 约 253 MiB。该样本仅覆盖目标脚本的真实解析/语义路径，不能外推为所有项目的 5 s 保证。
+
+可复现的混合抽样入口为 `pnpm bench:case1`：在临时项目生成 40 份 parse、40 份 update 和 20 份 `cloud.yaml`，共享合成 overlays、allowlist 与本地 JSON 解码 reusable workflow stub；绝不执行这些脚本或 workflow。生成清单 SHA-256 为 `bb3a107ee502dd847d1c6747cf44b87d25a8a51bd1d1e706591b689b977cf523`。Apple M1 / macOS arm64 / Node 22.23.1 上三次独立冷 CLI 用时 2.56、2.55、2.53 s，峰值 RSS 分别约 283、281、274 MB；每次实际检查 220 个内部 unit，零诊断、完整通过并汇总 60 个 may-write 路径。该样本满足初始 5 s 目标，但采用合成依赖，不代表真实第三方 action、云命令或所有项目的性能保证。
 
 工程初始化阶段只验证工具链、基础模型及构建，不宣称产品测试已通过。
