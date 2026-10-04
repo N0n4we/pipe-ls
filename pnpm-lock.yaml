@@ -11,12 +11,18 @@ importers:
       '@biomejs/biome':
         specifier: 2.5.14
         version: 2.5.14
+      '@types/jmespath':
+        specifier: 0.15.2
+        version: 0.15.2
       '@types/node':
         specifier: 22.20.3
         version: 22.20.3
       '@vscode/tree-sitter-wasm':
         specifier: 0.3.1
         version: 0.3.1
+      jmespath:
+        specifier: 0.16.0
+        version: 0.16.0
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -26,15 +32,27 @@ importers:
 
   packages/cli:
     dependencies:
+      '@pipe-ls/core':
+        specifier: workspace:*
+        version: link:../core
+      '@pipe-ls/hosts':
+        specifier: workspace:*
+        version: link:../hosts
       '@pipe-ls/workspace':
         specifier: workspace:*
         version: link:../workspace
+      '@vscode/tree-sitter-wasm':
+        specifier: 0.3.1
+        version: 0.3.1
 
   packages/core:
     dependencies:
       web-tree-sitter:
         specifier: 0.27.0
         version: 0.27.0
+      yaml:
+        specifier: 2.9.1
+        version: 2.9.1
 
   packages/hosts:
     dependencies:
@@ -435,6 +453,9 @@ packages:
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
+  '@types/jmespath@0.15.2':
+    resolution: {integrity: sha512-pegh49FtNsC389Flyo9y8AfkVIZn9MMPE9yJrO9svhq6Fks2MwymULWjZqySuxmctd3ZH4/n7Mr98D+1Qo5vGA==}
+
   '@types/node@22.20.3':
     resolution: {integrity: sha512-DZmzkmwHzXrLPAXPyKNDzlIwMMUZCVacoD25ywdy5YTKGbOx/2ld+Q38Im2zJ0vBuZP5Prd3VZutKZyXwkOS8A==}
 
@@ -506,6 +527,10 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
+
+  jmespath@0.16.0:
+    resolution: {integrity: sha512-9FzQjJ7MATs1tSpnco1K6ayiYE3figslrXA72G2HQ/n76RzvYlofyi5QM+iX4YRs/pu3yzxlVQSST23+dMDknw==}
+    engines: {node: '>= 0.6.0'}
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -867,6 +892,8 @@ snapshots:
 
   '@types/estree@1.0.9': {}
 
+  '@types/jmespath@0.15.2': {}
+
   '@types/node@22.20.3':
     dependencies:
       undici-types: 6.21.0
@@ -959,6 +986,8 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  jmespath@0.16.0: {}
 
   magic-string@0.30.21:
     dependencies:

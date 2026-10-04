@@ -136,7 +136,7 @@ jobs:
 
 ## 6. 检查报告与安全
 
-首版待实现入口：`pipe-ls check [paths...] [--format text|json]`、`pipe-ls --version`。省略 paths 时按 `.github` 标记自动探查项目。`pipe-ls lsp --stdio` 属于后续阶段。
+首版 CLI 入口：`pipe-ls check [--json] [paths...]`、`pipe-ls --version`。省略 paths 时按 `.github` 标记自动探查项目。`pipe-ls lsp --stdio` 属于后续阶段。
 
 | code | 含义 |
 | --- | --- |
@@ -154,6 +154,10 @@ jobs:
 
 CLI 退出码：`0` 至少一个目标完成检查且所有目标通过；`1` 存在类型/契约/语法错误或检查受阻；`2` 无目标、全部排除、参数错误、入口不可读或内部故障；中断 `130`。JSON 报告带 `schemaVersion: 1`、版本、原始 URI/range、稳定 code、完整性、未验证依赖和契约假设；按 URI/offset/code 排序。CLI 行列从 1 开始，JSON/LSP 从 0 开始，列均为 UTF-16。
 
-项目探查和依赖解析的路径经 realpath 限制在工作区边界内；不访问远程 URI、云平台或真实 secrets，不从 `process.env` 填充业务输入，不执行用户 Bash/jq/业务命令。日志不打印源码、payload 或环境值；LSP stdout 仅传协议。
+当前开发构建的 `fileEffects` 只列已验证的有限本地 may-write 路径；`fileEffectsUnknown: true` 表示至少一个已建模的文件写入目标无法解析，此后不可继续信任旧文件快照。`externalEffects` 只列可能运行的命令族，不含 argv 或 secret，也不证明远端成功。检查受阻时这些摘要不是完整副作用清单；空数组或 `fileEffectsUnknown: false` 不保证没有其他未知副作用。
+
+未解析的写入同样撤销受影响 run 的 GitHub env/output 生产者证明和后续 step 的旧 env 事实，因为目标可能是平台特殊文件，而不只是仓库文件。
+
+项目探查和依赖解析的路径经 realpath 限制在工作区边界内；不访问远程 URI、云平台或真实 secrets，不从 `process.env` 填充业务输入，不执行用户 Bash/jq/业务命令。日志不打印源码、payload 或环境值；YAML、模板和 jq 语法错误只报告固定类别与原文件位置，不转发解析器附带的源码片段或原始 token；LSP stdout 仅传协议。
 
 缓存键包含内容、规则/parser 版本、项目探查结果、执行上下文和依赖版本；反向依赖失效，循环调用按 SCC 报告受阻。worker 隔离 parser/tree，定期取消并以终止 worker 兜底。文件数/体积、AST 深度、分支/类型组合和时间均设预算，超限不静默丢目标。依赖安装是显式开发操作，分析时不自动下载资产。

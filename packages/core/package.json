@@ -1,7 +1,14 @@
 {
   "name": "@pipe-ls/core",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Core analysis and JSON contract model for pipe-ls",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "type": "module",
   "exports": {
     ".": {
@@ -16,6 +23,7 @@
     "build": "tsc --project tsconfig.json"
   },
   "dependencies": {
-    "web-tree-sitter": "0.27.0"
+    "web-tree-sitter": "0.27.0",
+    "yaml": "2.9.1"
   }
 }
