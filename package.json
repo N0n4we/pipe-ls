@@ -1,7 +1,6 @@
 {
   "name": "pipe-ls-workspace",
   "private": true,
-  "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.20.0",
   "engines": {
@@ -12,20 +11,13 @@
     "format": "biome format --write .",
     "typecheck": "tsc --project tsconfig.check.json",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:package": "pnpm build && node scripts/test-package.mjs",
-    "bench:case1": "pnpm build && node scripts/bench-case1.mjs",
-    "audit:case1": "pnpm build && node scripts/audit-case1.mjs",
-    "pack:offline": "pnpm build && node scripts/pack-offline.mjs",
     "test:watch": "vitest",
     "build": "pnpm --recursive run build"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",
-    "@types/jmespath": "0.15.2",
     "@types/node": "22.20.3",
     "@vscode/tree-sitter-wasm": "0.3.1",
-    "jmespath": "0.16.0",
     "typescript": "5.9.3",
     "vitest": "4.0.18"
   }

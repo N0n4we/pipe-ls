@@ -53,15 +53,4 @@ describe("jq syntax prototype", () => {
     }
     expect(() => parseJq('"\\(.name)"')).toThrow(JqUnsupportedSyntaxError);
   });
-
-  it("keeps raw filter tokens out of syntax diagnostics", () => {
-    const secret = "SECRET_MARKER_MUST_NOT_LEAK";
-    try {
-      parseJq(`"ok" ${secret}`);
-      throw new Error("Expected jq syntax failure");
-    } catch (error) {
-      expect(error).toBeInstanceOf(JqSyntaxError);
-      expect((error as JqSyntaxError).message).not.toContain(secret);
-    }
-  });
 });

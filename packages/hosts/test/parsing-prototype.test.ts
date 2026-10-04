@@ -318,7 +318,7 @@ describe("case 1 scenario matrix", () => {
     ).toHaveLength(5);
     expect(
       matrix.cases.filter((scenario) => scenario.kind === "negative"),
-    ).toHaveLength(15);
+    ).toHaveLength(13);
     expect(
       matrix.cases.filter((scenario) => scenario.kind === "blocked"),
     ).toHaveLength(5);
@@ -346,8 +346,7 @@ describe("case 1 scenario matrix", () => {
       if (!input) throw new Error(`Missing input for ${scenario.id}`);
       expect(scenario.requires, scenario.id).toEqual([
         "synthetic-overlays",
-        "real-reusable-workflow",
-        "synthetic-tool-pins",
+        "reusable-workflow-stub",
       ]);
       expect(JSON.parse(JSON.stringify(input))).toEqual(input);
       for (const reference of input.images.split(",")) {
@@ -377,7 +376,7 @@ describe("case 1 scenario matrix", () => {
         const missingDependency = scenario.missingDependency;
         if (missingDependency) {
           expect(() => fixture(missingDependency), scenario.id).toThrow();
-          if (!scenario.mutation) continue;
+          continue;
         }
         const target = scenario.mutation?.target ?? scenario.entry;
         const source = scenario.mutation

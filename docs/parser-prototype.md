@@ -1,6 +1,6 @@
 # P0 解析与源码映射验证记录
 
-本记录保存 P0 技术路线的原型结论，表内“尚未证明”指 P0 当时的状态，不代表当前产品进度。首版 CLI + Bash/GitHub Actions 已完成本地验收；原 case 1 缺失业务依赖仍是预期 `PIPE204`，不要求提供生产资料。当前证据以[首版验收记录](implementation-plan.md#5-首版验收记录)和[case 1 矩阵](../tests/cases/1/matrix.json)为准。
+本记录验证技术路线，不表示 case 1 已通过静态分析。当前测试执行解析、位置映射和矩阵完整性检查；`PIPE` 诊断、Bash/jq 数据流、外部命令效果及 CI 契约仍待分析器实现。参见 [case 1 矩阵](../tests/cases/1/matrix.json)。
 
 ## 路线与固定资产
 
@@ -10,7 +10,7 @@
 | jq | 自有 lexer + Pratt/递归下降的 **语法原型** | case 1 的 46 个静态单引号 filter 全部解析；token/AST 保留 UTF-16 span；语法错误与已知不支持项分开 | jq 1.8.2 完整语法/语义、flag、类型/数量/失败路径；动态 filter 不按静态通过 |
 | YAML | `yaml@2.9.1`（ISC）的 AST + `keepSourceTokens` | workflow 解码、五段 run 提取；plain/literal/folded/quoted、chomping、CRLF 和转义的代表性映射 | alias/tag、多行复杂转义的精确映射；未支持形态只给整段非精确位置 |
 
-Bash grammar 测试资产 SHA-256：`a14e9ed880b2c3f16cd00c796c38d237a3e9b028bdec5b4315c76976e67b01ca`；`web-tree-sitter` 运行时 WASM SHA-256：`c03bccdc3b448a32848f5ae327e209c982bbb0840d43eec8bc2d5759544a1ed3`。两份校验和均在测试中断言；解析核心不自行读取文件或下载资产。CLI 包的空 store 离线安装、WASM 加载及第三方许可证清单现已验证。`web-tree-sitter` 上游声明缺少 `EmscriptenModule` 类型，项目中有仅供编译的 ambient shim，不改变运行时行为。
+Bash grammar 测试资产 SHA-256：`a14e9ed880b2c3f16cd00c796c38d237a3e9b028bdec5b4315c76976e67b01ca`；`web-tree-sitter` 运行时 WASM SHA-256：`c03bccdc3b448a32848f5ae327e209c982bbb0840d43eec8bc2d5759544a1ed3`。两份校验和均在测试中断言；解析核心不自行读取文件或下载资产。当前根目录的 grammar WASM 包是开发/验证依赖，正式 CLI 打包仍须只带所需 grammar，离线验证与许可证清单尚未完成。`web-tree-sitter` 上游声明缺少 `EmscriptenModule` 类型，项目中有仅供编译的 ambient shim，不改变运行时行为。
 
 没有采用 `tree-sitter-jq@1.0.2`：其公开包许可证为 GPL-3.0-or-later，与本项目当前依赖路线不合。自有原型保留字段、对象 key、动态索引、reduce 等语法节点，但**不**做类型推断。jq 字符串插值等范围外形式返回 `JqUnsupportedSyntaxError`，而不是伪装成已支持的合法 filter；原型的 `JqSyntaxError` 也不应直接等同于最终 `PIPE001`，仍需语法边界验证。
 
@@ -20,8 +20,8 @@ Bash grammar 测试资产 SHA-256：`a14e9ed880b2c3f16cd00c796c38d237a3e9b028bde
 
 ## case 1 矩阵与执行边界
 
-`matrix.json` 包含 **5 正例、15 反例、5 受阻例**。P0 时只检查解析和锚点；现在 25 个场景有完整真实静态链、CLI 诊断与受控运行时 oracle。合成依赖下的静态通过不等于原 fixture 可通过，不证明动态远端副作用；本轮新增代码尚未公开发布。
+`matrix.json` 包含 **5 正例、13 反例、5 受阻例**，给出具体输入、正例所需合成依赖、可物化的源文件变更/片段、预期事实及未来诊断码。测试目前断言：引用确实来自 allowlist 且唯一、JSON 特殊字符往返、变更锚点唯一、变更后仍可被 Bash/YAML/jq 解析、缺失依赖确实缺失；**不**断言分析器已经产生预期 `PIPE` 诊断。待 P1/P2 实现后，应把这些 oracle 接入 CLI fixture runner 并检查原文件诊断位置和退出码。
 
-当前 `resources/**` overlays 仍缺失，完整检查须报告相应 `PIPE204`；华为路径所需的 `.github/tool-versions.env` 也缺失。真实 caller/callee 在合成依赖下已完成静态验收，未替换 Action/workflow；不能因此声称原 case 1 通过。这些缺失项不是要求补齐的生产资料。OMP allowlist 的重复 repository 是单独的数据质量问题，矩阵正例选择唯一行，不误报为 JSON 接口错误。不得执行整个 workflow、Action、SDK、git/gh/云操作。运行时回归仅使用临时副本、合成数据及精确核对的本地切片。
+当前 `resources/**` 与 `.github/workflows/do-rollout-restart.yaml` 故意缺失，完整检查须报告 `PIPE204`，不能因解析成功声称 case 1 通过。OMP allowlist 的重复 repository 是单独的数据质量问题，矩阵正例选择唯一行，不把它误报为 JSON 接口错误。不得直接执行整个 workflow，也不得在测试中运行 git/gh/云操作。完整运行时回归只能在临时副本与合成 overlays 上做；本轮未运行。
 
-复现：`pnpm lint && pnpm typecheck && pnpm test && pnpm test:integration && pnpm test:package`。本机 jq 1.8.2 是语义基准，已有固定用例和四种 case 1 filter 的有界生成差分测试；更广泛的差分和分段映射仍是后续工作。四个运行时包已在 npm 公开发布；CLI tarball 已携带第三方许可证清单，并通过空 pnpm store 的临时离线安装冒烟。
+复现：`pnpm lint && pnpm typecheck && pnpm test && pnpm build`。本机 jq 1.8.2 已设为语义基准，尚未完成以该版本为基准的差分测试。P0 的 JSON 模板 parser、完整分段映射及离线包装仍是后续工作。

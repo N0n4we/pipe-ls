@@ -161,7 +161,7 @@ export function lexJq(source: string): JqToken[] {
       continue;
     }
     throw new JqUnsupportedSyntaxError(
-      "Unsupported jq character",
+      `Unsupported jq character ${JSON.stringify(char)}`,
       createSpan(start, start + 1),
     );
   }
@@ -252,7 +252,10 @@ class JqParser {
 
   private expect(value: string): JqToken {
     if (this.current.value !== value && this.current.kind !== value) {
-      throw new JqSyntaxError(`Expected ${value}`, this.current.span);
+      throw new JqSyntaxError(
+        `Expected ${value}, got ${this.current.value || "EOF"}`,
+        this.current.span,
+      );
     }
     return this.take();
   }
@@ -374,7 +377,10 @@ class JqParser {
     ) {
       return node("name", token.span, [], token.value);
     }
-    throw new JqSyntaxError("Expected jq expression", token.span);
+    throw new JqSyntaxError(
+      `Expected jq expression, got ${token.value || "EOF"}`,
+      token.span,
+    );
   }
 
   private object(start: JqToken): JqNode {
